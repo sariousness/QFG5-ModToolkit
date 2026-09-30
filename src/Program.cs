@@ -1,3 +1,4 @@
+using QFG5Extractor.Core;
 using System;
 using System.Windows.Forms;
 
@@ -10,7 +11,7 @@ namespace QFG5Extractor
         {
             Application.EnableVisualStyles();
             Application.SetCompatibleTextRenderingDefault(false);
-            Application.Run(new MainForm());
+            Application.Run(new QFG5Extractor.Core.MainForm());
         }
     }
 }

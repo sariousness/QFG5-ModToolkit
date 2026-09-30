@@ -1,6 +1,7 @@
+using QFG5Extractor.Core;
 using System;
 using System.IO;
-using QFG5Extractor.qfg5model;
+using QFG5Extractor.Resources.Model;
 
 class TestHarness {
     static void Main() {

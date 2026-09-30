@@ -4,8 +4,12 @@ QFG5Extractor is a suite of reverse-engineered C# extraction tools for parsing, 
 
 ## Features
 - **SPK Tab:** Supports parsing nested archive structures within `.SPK` files. Supports multiple file selections and iterating over an entire origin folder automatically via `Batch Output`.
-- **Model Tab:** Transpiles native QFG5 `.mdl` models dynamically into open `.hak` files, bridging the legacy mesh structure, and handles bidirectional BMP exports and injection directly into the mesh byte arrays. Contains memory guards to safely digest malformed/corrupted arrays.
+- **Model Tab:** Transpiles native QFG5 `.mdl` models dynamically into open `.hak` files.
+- **MDL Viewer (OpenTK):** A hardware-accelerated 3D viewer supporting skeletal animation assembly, multi-texture rendering, and external texture overrides.
 - **Msg & Pano Tabs:** Converts legacy message blocks and `.nod` panorama backgrounds into modern image formats dynamically.
+
+## Changelog
+See [CHANGELOG.md](CHANGELOG.md) for a full history of changes.
 
 ## Building and Running
 

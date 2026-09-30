@@ -1,0 +1,44 @@
+{
+    "010": {
+        "name": "hero",
+        "submeshes": 23,
+        "vertices": 1364,
+        "compatibleAnms": []
+    },
+    "025": {
+        "name": "11-25-98",
+        "submeshes": 19,
+        "vertices": 1239,
+        "compatibleAnms": []
+    },
+    "026": {
+        "name": "11-25-98",
+        "submeshes": 19,
+        "vertices": 1239,
+        "compatibleAnms": []
+    },
+    "040": {
+        "name": "PHOLOS",
+        "submeshes": 11,
+        "vertices": 1158,
+        "compatibleAnms": []
+    },
+    "048": {
+        "name": "48",
+        "submeshes": 17,
+        "vertices": 454,
+        "compatibleAnms": []
+    },
+    "074": {
+        "name": "invader",
+        "submeshes": 25,
+        "vertices": 1027,
+        "compatibleAnms": []
+    },
+    "097": {
+        "name": "Grangler",
+        "submeshes": 16,
+        "vertices": 532,
+        "compatibleAnms": []
+    }
+}

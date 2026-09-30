@@ -10,7 +10,7 @@
     <AppDesignerFolder>Properties</AppDesignerFolder>
     <RootNamespace>QFG5Extractor</RootNamespace>
     <AssemblyName>QFG5Extractor</AssemblyName>
-    <TargetFrameworkVersion>v2.0</TargetFrameworkVersion>
+    <TargetFrameworkVersion>v4.5</TargetFrameworkVersion>
     <FileAlignment>512</FileAlignment>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
   </PropertyGroup>
@@ -58,26 +58,58 @@
   </PropertyGroup>
   <ItemGroup>
     <Reference Include="System" />
+    <Reference Include="System.Core" />
     <Reference Include="System.Drawing" />
     <Reference Include="System.Windows.Forms" />
+    <Reference Include="OpenTK">
+      <HintPath>OpenTK.dll</HintPath>
+      <Private>True</Private>
+    </Reference>
+    <Reference Include="OpenTK.GLControl">
+      <HintPath>OpenTK.GLControl.dll</HintPath>
+      <Private>True</Private>
+    </Reference>
   </ItemGroup>
   <ItemGroup>
     <Compile Include="Program.cs" />
-    <Compile Include="MainForm.cs" />
-    <Compile Include="qfg5pano\PanoTab.cs" />
-    <Compile Include="qfg5pano\PanoConverter.cs" />
-    <Compile Include="qfg5msg\MsgTab.cs" />
-    <Compile Include="qfg5msg\MsgConverter.cs" />
-    <Compile Include="qfg5model\ModelTab.cs" />
-    <Compile Include="qfg5model\ModelConverter.cs" />
-    <Compile Include="qfg5model\qfg5modelMath.cs" />
-    <Compile Include="qfg5model\qfg5modelShared.cs" />
-    <Compile Include="qfg5model\qfg5modelMesh.cs" />
-    <Compile Include="qfg5model\qfg5modelMeshImport.cs" />
-    <Compile Include="qfg5model\qfg5modelBitmap.cs" />
-    <Compile Include="Logger.cs" />
-    <Compile Include="qfg5spk\SpkTab.cs" />
-    <Compile Include="qfg5spk\SpkConverter.cs" />
+    <Compile Include="Core\MainForm.cs" />
+    <Compile Include="Resources\Panorama\PanoTab.cs" />
+    <Compile Include="Resources\Panorama\PanoConverter.cs" />
+    <Compile Include="Resources\Message\MsgTab.cs" />
+    <Compile Include="Resources\Message\MsgConverter.cs" />
+    <Compile Include="Resources\Model\ModelTab.cs" />
+    <Compile Include="Resources\Model\ModelConverter.cs" />
+    <Compile Include="Resources\Model\qfg5modelMath.cs" />
+    <Compile Include="Resources\Model\qfg5modelShared.cs" />
+    <Compile Include="Resources\Model\qfg5modelMesh.cs" />
+    <Compile Include="Resources\Model\qfg5modelMeshImport.cs" />
+    <Compile Include="Resources\Model\qfg5modelBitmap.cs" />
+    <Compile Include="Resources\Model\OldMdlViewerLogic.cs" />
+    <Compile Include="Resources\Model\MeshData.cs" />
+    <Compile Include="Resources\Model\NormalGenerator.cs" />
+    <Compile Include="Resources\Model\MeshLoader.cs" />
+    <Compile Include="Viewers\Model\MdlViewer.cs" />
+    <Compile Include="Resources\Model\ModelDatabase.cs" />
+    <Compile Include="Core\Logger.cs" />
+    <Compile Include="Storage\SPK\SpkTab.cs" />
+    <Compile Include="Storage\SPK\SpkConverter.cs" />
+    <Compile Include="Resources\Save\SaveGameParser.cs" />
+    <Compile Include="Resources\Save\SaveTab.cs" />
+    <Compile Include="Resources\Save\FlagsTab.cs" />
+    <Compile Include="Resources\Save\ItemDatabase.cs" />
+    <Compile Include="Core\UI\QFG5Theme.cs" />
+    <Compile Include="Core\UI\QFG5Button.cs" />
+    <Compile Include="Core\UI\QFG5ProgressBar.cs" />
+    <Compile Include="Core\UI\QFG5PathField.cs" />
+    <Compile Include="Core\UI\QFG5PreviewFrame.cs" />
+    <Compile Include="Core\UI\QFG5Layouts.cs" />
+    <Compile Include="Resources\Gra\GraTab.cs" />
+    <Compile Include="Resources\Gra\GraConverter.cs" />
+    <Compile Include="Core\SharedState.cs" />
+    <Compile Include="Core\SettingsTab.cs" />
+    <Compile Include="Resources\Save\IconMapperTab.cs" />
+    <Compile Include="Core\TextureEditorTab.cs" />
+    <Compile Include="Viewers\Model\GlbExporter.cs" />
   </ItemGroup>
   <Import Project="$(MSBuildToolsPath)\Microsoft.CSharp.targets" />
 </Project>
