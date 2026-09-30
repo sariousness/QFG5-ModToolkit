@@ -8,8 +8,16 @@ QFG5Extractor is a suite of reverse-engineered C# extraction tools for parsing, 
 - **MDL Viewer (OpenTK):** A hardware-accelerated 3D viewer supporting skeletal animation assembly, multi-texture rendering, and external texture overrides.
 - **Msg & Pano Tabs:** Converts legacy message blocks and `.nod` panorama backgrounds into modern image formats dynamically.
 
+<<<<<<< HEAD
 ## Changelog
 See [CHANGELOG.md](CHANGELOG.md) for a full history of changes.
+=======
+### v1.0.1
+- Added SPK repack support to rebuild `.spk` archives from extracted/modded folders.
+- Added a new **Repack SPK** action in the SPK tab UI.
+- Repack flow now rewrites SPK file blocks and directory offsets/sizes to keep archive structure consistent for in-game use.
+- Internal SPK parsing logic was consolidated for reuse between extraction and repack paths.
+>>>>>>> 88099063b99af6fdfc6f078ae383b93a1ebe752c
 
 ## Building and Running
 
