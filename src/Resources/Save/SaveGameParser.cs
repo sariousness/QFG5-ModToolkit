@@ -7,17 +7,18 @@ namespace QFG5Extractor.Resources.Save
 {
     public class SaveGameParser
     {
-        private byte[] saveData;
-        private string filePath;
-        private int detectedOffset = -1;
+        private readonly SaveSession session;
 
         public const int INVENTORY_SLOT_SIZE = 16;
+        public const int INVENTORY_POOL_SIZE = 120;
         public const int MAX_SLOTS = 250;
 
         public Dictionary<string, string> ObjectNames { get; private set; }
 
-        public SaveGameParser()
+        public SaveGameParser(SaveSession session)
         {
+            if (session == null) throw new ArgumentNullException("session");
+            this.session = session;
             ObjectNames = new Dictionary<string, string>();
         }
 
@@ -38,14 +39,7 @@ namespace QFG5Extractor.Resources.Save
             }
         }
 
-        public void LoadSave(string path)
-        {
-            filePath = path;
-            saveData = File.ReadAllBytes(path);
-            detectedOffset = FindInventoryOffset();
-        }
-
-        private int FindInventoryOffset()
+        internal static int FindInventoryOffset(int length, Func<int, byte> readByte)
         {
             int bestStart = -1;
             int bestCount = 0;
@@ -56,15 +50,15 @@ namespace QFG5Extractor.Resources.Save
                 int currentCluster = 0;
                 int clusterStart = -1;
 
-                for (int i = align; i < saveData.Length - 16; i += INVENTORY_SLOT_SIZE)
+                for (int i = align; i < length - INVENTORY_SLOT_SIZE; i += INVENTORY_SLOT_SIZE)
                 {
-                    string idHex = saveData[i].ToString("X2") + saveData[i + 1].ToString("X2");
-                    int amount = saveData[i + 4] | (saveData[i + 5] << 8) | (saveData[i + 6] << 16) | (saveData[i + 7] << 24);
+                    string idHex = readByte(i).ToString("X2") + readByte(i + 1).ToString("X2");
+                    int amount = readByte(i + 4) | (readByte(i + 5) << 8) | (readByte(i + 6) << 16) | (readByte(i + 7) << 24);
 
                     // Pattern: Valid ID or all zeros (empty slot), and usually [01 00] at +2/+3 if not empty
                     bool isValidId = idHex != "0000" && ItemDatabase.GetItems().Exists(it => it.ID == idHex);
                     bool isEmpty = (idHex == "0000" && amount == 0);
-                    bool hasIndicator = (saveData[i + 2] == 0x01 && saveData[i + 3] == 0x00) || isEmpty;
+                    bool hasIndicator = (readByte(i + 2) == 0x01 && readByte(i + 3) == 0x00) || isEmpty;
 
                     if ((isValidId && hasIndicator) || (isEmpty && currentCluster > 0)) // Only count empty slots if we're already in a cluster
                     {
@@ -97,12 +91,6 @@ namespace QFG5Extractor.Resources.Save
             return bestCount > 5 ? bestStart : 0x0110;
         }
 
-        public void SaveSave(string path = null)
-        {
-            if (path == null) path = filePath;
-            File.WriteAllBytes(path, saveData);
-        }
-
         public class InventoryItem
         {
             public int Offset { get; set; }
@@ -117,7 +105,10 @@ namespace QFG5Extractor.Resources.Save
         public List<InventoryItem> GetInventory()
         {
             var items = new List<InventoryItem>();
-            if (detectedOffset == -1) detectedOffset = FindInventoryOffset();
+            if (!session.IsLoaded) return items;
+            int detectedOffset = session.InventoryOffset;
+            if (!session.HasInventoryRange(detectedOffset, INVENTORY_POOL_SIZE))
+                throw new InvalidDataException("The active save does not contain a complete inventory slot range.");
 
             string[] placeNames = new string[] {
                 "Inventory", "Inn Room Chest", "Hydra Chest", "Tinos Chest", 
@@ -128,15 +119,14 @@ namespace QFG5Extractor.Resources.Save
             };
 
             // The main pool seems to be 120 slots
-            int POOL_SIZE = 120;
-            for (int i = 0; i < POOL_SIZE; i++)
+            for (int i = 0; i < INVENTORY_POOL_SIZE; i++)
             {
                 int offset = detectedOffset + (i * INVENTORY_SLOT_SIZE);
-                if (offset + 16 > saveData.Length) break;
+                if (offset + 16 > session.Length) break;
 
-                string idHex = saveData[offset].ToString("X2") + saveData[offset + 1].ToString("X2");
-                int amount = saveData[offset + 4] | (saveData[offset + 5] << 8) | (saveData[offset + 6] << 16) | (saveData[offset + 7] << 24);
-                int resId = saveData[offset + 8];
+                string idHex = session.GetByte(offset).ToString("X2") + session.GetByte(offset + 1).ToString("X2");
+                int amount = session.GetByte(offset + 4) | (session.GetByte(offset + 5) << 8) | (session.GetByte(offset + 6) << 16) | (session.GetByte(offset + 7) << 24);
+                int resId = session.GetByte(offset + 8);
                 
                 string currentPlace = resId < placeNames.Length ? placeNames[resId] : $"Place {resId}";
 
@@ -153,7 +143,7 @@ namespace QFG5Extractor.Resources.Save
                         ReservoirId = resId
                     });
                 }
-                else if (idHex == "2A00" && saveData[offset + 8] == 0x04 && saveData[offset + 9] == 0x01)
+                else if (idHex == "2A00" && session.GetByte(offset + 8) == 0x04 && session.GetByte(offset + 9) == 0x01)
                 {
                     items.Add(new InventoryItem
                     {
@@ -186,72 +176,77 @@ namespace QFG5Extractor.Resources.Save
 
         public void UpdateInventoryItem(int offset, string newIdHex, int newAmount)
         {
-            if (offset < 0 || offset + 8 > saveData.Length) return;
+            if (!session.HasInventoryRange(session.InventoryOffset, INVENTORY_POOL_SIZE) ||
+                offset < session.InventoryOffset ||
+                offset - session.InventoryOffset > INVENTORY_POOL_SIZE * INVENTORY_SLOT_SIZE - 8)
+                return;
 
             if (newIdHex.Length == 4)
             {
-                saveData[offset] = Convert.ToByte(newIdHex.Substring(0, 2), 16);
-                saveData[offset + 1] = Convert.ToByte(newIdHex.Substring(2, 2), 16);
+                session.SetByte(offset, Convert.ToByte(newIdHex.Substring(0, 2), 16));
+                session.SetByte(offset + 1, Convert.ToByte(newIdHex.Substring(2, 2), 16));
                 
                 // Set the indicator [01 00] if we are setting an item and it's not a header
                 // We'll assume the user doesn't manually edit headers into items or vice versa easily
                 if (newIdHex != "0000" && newIdHex != "2A00")
                 {
-                    saveData[offset + 2] = 0x01;
-                    saveData[offset + 3] = 0x00;
+                    session.SetByte(offset + 2, 0x01);
+                    session.SetByte(offset + 3, 0x00);
                 }
             }
 
-            saveData[offset + 4] = (byte)(newAmount & 0xFF);
-            saveData[offset + 5] = (byte)((newAmount >> 8) & 0xFF);
-            saveData[offset + 6] = (byte)((newAmount >> 16) & 0xFF);
-            saveData[offset + 7] = (byte)((newAmount >> 24) & 0xFF);
+            session.SetByte(offset + 4, (byte)(newAmount & 0xFF));
+            session.SetByte(offset + 5, (byte)((newAmount >> 8) & 0xFF));
+            session.SetByte(offset + 6, (byte)((newAmount >> 16) & 0xFF));
+            session.SetByte(offset + 7, (byte)((newAmount >> 24) & 0xFF));
         }
 
         public void InsertInventoryItem(int index)
         {
-            if (detectedOffset == -1) detectedOffset = FindInventoryOffset();
-            
             // Limit shifting to the 120-slot pool
-            int POOL_SIZE = 120;
-            if (index < 0 || index >= POOL_SIZE - 1) return;
+            int POOL_SIZE = INVENTORY_POOL_SIZE;
+            int detectedOffset = session.InventoryOffset;
+            if (index < 0 || index >= POOL_SIZE - 1 ||
+                !session.HasInventoryRange(detectedOffset, POOL_SIZE))
+                throw new InvalidDataException("The selected inventory range cannot safely accommodate an inserted slot.");
 
-            int currentResId = saveData[detectedOffset + index * INVENTORY_SLOT_SIZE + 8];
+            int currentResId = session.GetByte(detectedOffset + index * INVENTORY_SLOT_SIZE + 8);
 
             // Shift all items from index+1 to POOL_SIZE-1 down
             for (int i = POOL_SIZE - 1; i > index + 1; i--)
             {
                 int src = detectedOffset + (i - 1) * INVENTORY_SLOT_SIZE;
                 int dst = detectedOffset + i * INVENTORY_SLOT_SIZE;
-                Array.Copy(saveData, src, saveData, dst, INVENTORY_SLOT_SIZE);
+                session.CopyWithin(src, dst, INVENTORY_SLOT_SIZE);
             }
 
             // Set the new slot (index + 1) to a duplicate of the current item
             int targetOffset = detectedOffset + (index + 1) * INVENTORY_SLOT_SIZE;
-            Array.Copy(saveData, detectedOffset + index * INVENTORY_SLOT_SIZE, saveData, targetOffset, INVENTORY_SLOT_SIZE);
+            session.CopyWithin(detectedOffset + index * INVENTORY_SLOT_SIZE, targetOffset, INVENTORY_SLOT_SIZE);
             
             // Ensure the Reservoir ID is preserved
-            saveData[targetOffset + 8] = (byte)currentResId;
+            session.SetByte(targetOffset + 8, (byte)currentResId);
         }
 
         public void DeleteInventoryItem(int index)
         {
-            if (detectedOffset == -1) detectedOffset = FindInventoryOffset();
-            
-            int POOL_SIZE = 120;
-            if (index < 0 || index >= POOL_SIZE) return;
+            int POOL_SIZE = INVENTORY_POOL_SIZE;
+            int detectedOffset = session.InventoryOffset;
+            if (index < 0 || index >= POOL_SIZE ||
+                !session.HasInventoryRange(detectedOffset, POOL_SIZE))
+                throw new InvalidDataException("The selected inventory range cannot safely accommodate a deleted slot.");
 
             // Shift items UP from index+1
             for (int i = index; i < POOL_SIZE - 1; i++)
             {
                 int src = detectedOffset + (i + 1) * INVENTORY_SLOT_SIZE;
                 int dst = detectedOffset + i * INVENTORY_SLOT_SIZE;
-                Array.Copy(saveData, src, saveData, dst, INVENTORY_SLOT_SIZE);
+                session.CopyWithin(src, dst, INVENTORY_SLOT_SIZE);
             }
 
             // Zero out the last slot
             int lastOffset = detectedOffset + (POOL_SIZE - 1) * INVENTORY_SLOT_SIZE;
-            Array.Clear(saveData, lastOffset, INVENTORY_SLOT_SIZE);
+            session.Clear(lastOffset, INVENTORY_SLOT_SIZE);
         }
     }
 }

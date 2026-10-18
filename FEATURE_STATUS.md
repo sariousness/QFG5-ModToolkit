@@ -13,13 +13,14 @@ This document tracks the current implementation status of the QFG5Extractor suit
 | **Multi-Texture MDL** | Done | Parses and renders all sub-bitmaps within MDL files. |
 | **90° Step Rotation** | Done | Matrix-based X/Y rotation without breaking coordinate frames. |
 | **Texture Overrides** | Done | Scans and applies external textures with prefix matching. |
+| **GLTF Export** | Done | Export assembled character models for use in modern 3D engines. |
+| **Skeletal Assembly** | Done | Assemblies submeshes using ANM matrices; some clipping/offsets remain. |
+| **Auto-Animation Match** | Done | Matches MDLs to potential ANMs using the persistent database. |
 
 ## 🟡 Beta / Functional (Needs Fine-Tuning)
 
 | Feature | Status | Description |
 | :--- | :---: | :--- |
-| **Skeletal Assembly** | Beta | Assemblies submeshes using ANM matrices; some clipping/offsets remain. |
-| **Auto-Animation Match** | Beta | Matches MDLs to potential ANMs using the persistent database. |
 | **UI Layout (v2)** | WIP | Grouped sections in place; some scaling/clipping fixes ongoing. |
 | **Save Editor** | WIP | Basic parsing works; UI integration and value modification pending. |
 
@@ -27,9 +28,8 @@ This document tracks the current implementation status of the QFG5Extractor suit
 
 | Feature | Status | Description |
 | :--- | :---: | :--- |
-| **GLTF Export** | Planned | Export assembled character models for use in modern 3D engines. |
 | **Full Repack Suite** | Planned | Unified "Build Mod" button to repack all asset types at once. |
 | **Auto-Updater** | Planned | Check for newer tool versions directly from the UI. |
 
 ---
-*Last Updated: 2026-03-03*
+*Last Updated: 2026-09-30*

@@ -28,7 +28,7 @@ namespace QFG5Extractor.Resources.Save
         private void InitializeComponent()
         {
             this.Dock = DockStyle.Fill;
-            this.BackColor = Color.FromArgb(40, 35, 30);
+            this.BackColor = QFG5Theme.ColorBgDark;
 
             TableLayoutPanel main = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, RowCount = 2 };
             main.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 35));
@@ -36,14 +36,14 @@ namespace QFG5Extractor.Resources.Save
             main.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
             main.RowStyles.Add(new RowStyle(SizeType.Absolute, 50));
 
-            lstItems = new ListBox { Dock = DockStyle.Fill, BackColor = Color.Black, ForeColor = Color.White, Font = new Font("Consolas", 10) };
+            lstItems = new ListBox { Dock = DockStyle.Fill, BackColor = QFG5Theme.ColorSurfaceRecessed, ForeColor = QFG5Theme.ColorTextPrimary, Font = QFG5Theme.BodyFont };
             lstItems.AllowDrop = true;
             lstItems.DragEnter += (s, e) => { if (e.Data.GetDataPresent(DataFormats.StringFormat)) e.Effect = DragDropEffects.Link; };
             lstItems.DragDrop += LstItems_DragDrop;
             lstItems.DrawMode = DrawMode.OwnerDrawFixed;
             lstItems.DrawItem += LstItems_DrawItem;
 
-            pnlIcons = new FlowLayoutPanel { Dock = DockStyle.Fill, AutoScroll = true, BackColor = Color.FromArgb(20, 15, 10) };
+            pnlIcons = new FlowLayoutPanel { Dock = DockStyle.Fill, AutoScroll = true, BackColor = QFG5Theme.ColorSurfaceRecessed };
 
             main.Controls.Add(lstItems, 0, 0);
             main.Controls.Add(pnlIcons, 1, 0);

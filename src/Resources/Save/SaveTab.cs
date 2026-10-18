@@ -4,6 +4,7 @@ using System.Drawing;
 using System.Windows.Forms;
 using System.IO;
 using System.Threading.Tasks;
+using System.Collections.Generic;
 using QFG5Extractor.Core.UI;
 
 namespace QFG5Extractor.Resources.Save
@@ -16,7 +17,8 @@ namespace QFG5Extractor.Resources.Save
         private QFG5Button btnSave;
         private DataGridView gridInventory;
         private SaveGameParser parser;
-        public event Action<string> SaveFileLoaded;
+        private readonly SaveSession session;
+        public event Action<string> SaveLoadRequested;
 
         private FlowLayoutPanel visualGrid;
         private string inventoryPath;
@@ -25,10 +27,30 @@ namespace QFG5Extractor.Resources.Save
         private Timer previewTimer;
         private System.Collections.Generic.List<Bitmap> previewFrames = new System.Collections.Generic.List<Bitmap>();
         private int previewFrameIdx = 0;
+        private bool hasLoadedSave;
+        private bool gridRefreshInProgress;
+        private int paletteRefreshVersion;
+        private Label paletteStatusLabel;
+        private Label hoverNameLabel;
 
-        public SaveTab()
+        private sealed class PaletteSection
         {
-            parser = new SaveGameParser();
+            public string Name;
+            public List<PaletteItem> Items = new List<PaletteItem>();
+        }
+
+        private sealed class PaletteItem
+        {
+            public string IdHex;
+            public string Name;
+            public Image Image;
+        }
+
+        public SaveTab(SaveSession session)
+        {
+            if (session == null) throw new ArgumentNullException("session");
+            this.session = session;
+            parser = new SaveGameParser(session);
             inventoryPath = Path.Combine(QFG5Theme.UIKitPath, "Inventory Graphics");
             
             previewTimer = new Timer { Interval = 100 };
@@ -47,7 +69,7 @@ namespace QFG5Extractor.Resources.Save
         {
             previewPopup = new Panel {
                 Size = new Size(160, 180),
-                BackColor = Color.FromArgb(40, 35, 30),
+                BackColor = QFG5Theme.ColorSurface,
                 BorderStyle = BorderStyle.FixedSingle,
                 Visible = false
             };
@@ -56,15 +78,18 @@ namespace QFG5Extractor.Resources.Save
                 Dock = DockStyle.Top,
                 Height = 140,
                 SizeMode = PictureBoxSizeMode.Zoom,
-                BackColor = Color.Black
+                BackColor = QFG5Theme.ColorSurfaceRecessed
             };
             
             Label lblClose = new Label {
                 Text = "Close",
                 Dock = DockStyle.Bottom,
                 Height = 25,
-                ForeColor = Color.Gold,
+                ForeColor = QFG5Theme.ColorTextGold,
+                Font = QFG5Theme.BodyBoldFont,
                 TextAlign = ContentAlignment.MiddleCenter,
+                BackColor = QFG5Theme.ColorBgDark,
+                BorderStyle = BorderStyle.FixedSingle,
                 Cursor = Cursors.Hand
             };
             lblClose.Click += (s, e) => { previewPopup.Visible = false; previewTimer.Stop(); };
@@ -86,7 +111,7 @@ namespace QFG5Extractor.Resources.Save
                 RowCount = 2,
                 Padding = new Padding(QFG5Layout.ContentPadding)
             };
-            mainLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, QFG5Layout.RowHeight));
+            mainLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, QFG5Layout.RowHeight + 30));
             mainLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
 
             btnLoad = new QFG5Button { Text = "Load", Width = QFG5Layout.ButtonWidth, Height = 30 };
@@ -105,20 +130,31 @@ namespace QFG5Extractor.Resources.Save
                 AutoGenerateColumns = false,
                 AllowUserToAddRows = false,
                 AllowUserToDeleteRows = false,
-                BackgroundColor = Color.Black,
-                ForeColor = Color.White,
-                GridColor = Color.FromArgb(40, 40, 40),
+                BackgroundColor = QFG5Theme.ColorBgDark,
+                ForeColor = QFG5Theme.ColorTextPrimary,
+                GridColor = QFG5Theme.ColorBorderOuter,
                 BorderStyle = BorderStyle.None,
                 SelectionMode = DataGridViewSelectionMode.FullRowSelect,
-                MultiSelect = false
+                MultiSelect = false,
+                ScrollBars = ScrollBars.Both,
+                Font = QFG5Theme.BodyFont,
+                RowTemplate = { Height = 26 },
+                ColumnHeadersHeight = 30
             };
 
-            gridInventory.DefaultCellStyle.BackColor = Color.Black;
-            gridInventory.DefaultCellStyle.ForeColor = Color.White;
-            gridInventory.DefaultCellStyle.SelectionBackColor = Color.FromArgb(100, 100, 110);
-            gridInventory.DefaultCellStyle.SelectionForeColor = Color.White;
-            gridInventory.ColumnHeadersDefaultCellStyle.BackColor = Color.FromArgb(100, 100, 110);
-            gridInventory.ColumnHeadersDefaultCellStyle.ForeColor = Color.White;
+            gridInventory.DefaultCellStyle.BackColor = QFG5Theme.ColorSurfaceRecessed;
+            gridInventory.DefaultCellStyle.ForeColor = QFG5Theme.ColorTextPrimary;
+            gridInventory.DefaultCellStyle.SelectionBackColor = QFG5Theme.ColorBorderHighlight;
+            gridInventory.DefaultCellStyle.SelectionForeColor = QFG5Theme.ColorTextPrimary;
+            gridInventory.DefaultCellStyle.Padding = new Padding(4, 2, 4, 2);
+            gridInventory.AlternatingRowsDefaultCellStyle.BackColor = QFG5Theme.ColorBgDark;
+            gridInventory.AlternatingRowsDefaultCellStyle.ForeColor = QFG5Theme.ColorTextPrimary;
+            gridInventory.ColumnHeadersDefaultCellStyle.BackColor = QFG5Theme.ColorSurface;
+            gridInventory.ColumnHeadersDefaultCellStyle.ForeColor = QFG5Theme.ColorTextGold;
+            gridInventory.ColumnHeadersDefaultCellStyle.Font = QFG5Theme.BodyBoldFont;
+            gridInventory.ColumnHeadersDefaultCellStyle.Alignment = DataGridViewContentAlignment.MiddleLeft;
+            gridInventory.ColumnHeadersDefaultCellStyle.Padding = new Padding(6, 2, 4, 2);
+            gridInventory.ColumnHeadersBorderStyle = DataGridViewHeaderBorderStyle.Single;
             gridInventory.EnableHeadersVisualStyles = false;
 
             gridInventory.Columns.Add(new DataGridViewTextBoxColumn { Name = "Place", HeaderText = "Reservoir / Place", ReadOnly = true, Width = 150 });
@@ -159,28 +195,51 @@ namespace QFG5Extractor.Resources.Save
             menu.Items.Add("Insert Item Below", null, BtnInsert_Click);
             menu.Items.Add("Delete Item", null, BtnDelete_Click);
             gridInventory.ContextMenuStrip = menu;
-            SplitContainer split = new SplitContainer { Dock = DockStyle.Fill, Orientation = Orientation.Vertical, BackColor = Color.Black };
-            QFG5Layout.SetSplitterRatioOnce(split, 0.45);
+            SplitContainer split = new SplitContainer {
+                Dock = DockStyle.Fill,
+                Orientation = Orientation.Vertical,
+                BackColor = QFG5Theme.ColorBgDark,
+                SplitterWidth = 6,
+                Panel1MinSize = 420,
+                Panel2MinSize = 280
+            };
+            QFG5Layout.SetSplitterRatioOnce(split, 0.62);
             
             QFG5PreviewFrame gridFrame = new QFG5PreviewFrame { Dock = DockStyle.Fill };
             gridFrame.Controls.Add(gridInventory);
 
             // Container for visual inventory + hover name
             Panel pnlVisualSide = new Panel { Dock = DockStyle.Fill };
-            Label lblHoverName = new Label { 
-                Text = "Hover over an item to see its name...", 
-                ForeColor = Color.Gold, 
-                Dock = DockStyle.Top, 
-                Height = 30, 
-                TextAlign = ContentAlignment.MiddleCenter,
-                BackColor = Color.FromArgb(30, 25, 20)
+            Panel pnlPaletteInfo = new Panel {
+                Dock = DockStyle.Top,
+                Height = 52,
+                BackColor = QFG5Theme.ColorSurface
             };
-            this.Tag = lblHoverName;
+            hoverNameLabel = new Label {
+                Text = "Hover over an item to see its name...", 
+                ForeColor = QFG5Theme.ColorTextMuted,
+                Location = new Point(0, 0),
+                Height = 26,
+                Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right,
+                TextAlign = ContentAlignment.MiddleCenter,
+                BackColor = QFG5Theme.ColorSurface
+            };
+            paletteStatusLabel = new Label {
+                Text = "Load a save to view its items.",
+                ForeColor = QFG5Theme.ColorTextMuted,
+                Location = new Point(0, 26),
+                Height = 26,
+                Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right,
+                TextAlign = ContentAlignment.MiddleCenter,
+                BackColor = QFG5Theme.ColorSurface
+            };
+            pnlPaletteInfo.Controls.Add(paletteStatusLabel);
+            pnlPaletteInfo.Controls.Add(hoverNameLabel);
 
             visualGrid = new FlowLayoutPanel { 
                 Dock = DockStyle.Fill, 
                 AutoScroll = true, 
-                BackColor = Color.FromArgb(20, 15, 10),
+                BackColor = QFG5Theme.ColorSurfaceRecessed,
                 Padding = new Padding(0)
             };
             visualGrid.SizeChanged += (s, e) => {
@@ -188,9 +247,7 @@ namespace QFG5Extractor.Resources.Save
             };
             
             pnlVisualSide.Controls.Add(visualGrid);
-            pnlVisualSide.Controls.Add(lblHoverName);
-            
-            PopulatePalette();
+            pnlVisualSide.Controls.Add(pnlPaletteInfo);
 
             gridInventory.AllowDrop = true;
             gridInventory.DragOver += (s, e) => {
@@ -217,7 +274,7 @@ namespace QFG5Extractor.Resources.Save
             split.Panel1.Controls.Add(gridFrame);
             split.Panel2.Controls.Add(pnlVisualSide);
 
-            mainLayout.Controls.Add(header, 0, 0);
+            mainLayout.Controls.Add(new QFG5CollapsibleSection("SAVE FILE", header, QFG5Layout.RowHeight + 30), 0, 0);
             mainLayout.Controls.Add(split, 0, 1);
 
             this.Controls.Add(mainLayout);
@@ -254,49 +311,73 @@ namespace QFG5Extractor.Resources.Save
 
         private void LoadSaveFile(string path)
         {
-            try
+            if (!CommitPendingEdits())
             {
-                parser.LoadSave(path);
-                RefreshGrid();
-                btnSave.Enabled = true;
-                if (SaveFileLoaded != null) SaveFileLoaded(path);
+                RestoreActivePath();
+                ShowInvalidItemIdWarning("loading another save");
+                return;
             }
-            catch (Exception ex)
-            {
-                MessageBox.Show("Error loading save file: " + ex.Message, "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
-                btnSave.Enabled = false;
-            }
+            if (SaveLoadRequested != null) SaveLoadRequested(path);
+        }
+
+        public bool CommitPendingEdits()
+        {
+            if (!gridInventory.EndEdit()) return false;
+            return SyncInventoryToSession();
+        }
+
+        public void RefreshFromSession()
+        {
+            txtFilePath.Text = session.IsLoaded ? session.FilePath : string.Empty;
+            hasLoadedSave = session.IsLoaded;
+            btnSave.Enabled = session.IsLoaded;
+            RefreshGrid();
+            if (hasLoadedSave) PopulatePalette();
+        }
+
+        public void RestoreActivePath()
+        {
+            txtFilePath.Text = session.IsLoaded ? session.FilePath : string.Empty;
         }
 
         private void RefreshGrid()
         {
-            gridInventory.Rows.Clear();
-            var items = parser.GetInventory();
-            foreach (var item in items)
+            gridRefreshInProgress = true;
+            try
             {
-                string displayName = ItemDatabase.GetName(item.IdHex);
-                
-                int rowIndex = gridInventory.Rows.Add(
-                    item.PlaceName,
-                    $"0x{item.Offset:X4}",
-                    item.IdHex,
-                    displayName,
-                    item.Amount
-                );
-
-                gridInventory.Rows[rowIndex].Tag = item; // Store item object for sync
-
-                if (item.IsHeader)
+                gridInventory.Rows.Clear();
+                var items = parser.GetInventory();
+                foreach (var item in items)
                 {
-                    gridInventory.Rows[rowIndex].DefaultCellStyle.BackColor = Color.LightGray;
-                    gridInventory.Rows[rowIndex].ReadOnly = true;
+                    string displayName = ItemDatabase.GetName(item.IdHex);
+
+                    int rowIndex = gridInventory.Rows.Add(
+                        item.PlaceName,
+                        $"0x{item.Offset:X4}",
+                        item.IdHex,
+                        displayName,
+                        item.Amount
+                    );
+
+                    gridInventory.Rows[rowIndex].Tag = item; // Store item object for sync
+
+                    if (item.IsHeader)
+                    {
+                        gridInventory.Rows[rowIndex].DefaultCellStyle.BackColor = QFG5Theme.ColorBorderOuter;
+                        gridInventory.Rows[rowIndex].DefaultCellStyle.ForeColor = QFG5Theme.ColorTextPrimary;
+                        gridInventory.Rows[rowIndex].ReadOnly = true;
+                    }
                 }
+            }
+            finally
+            {
+                gridRefreshInProgress = false;
             }
         }
 
         private void GridInventory_CellValueChanged(object sender, DataGridViewCellEventArgs e)
         {
-            if (e.RowIndex < 0) return;
+            if (e.RowIndex < 0 || e.ColumnIndex < 0 || gridRefreshInProgress) return;
             DataGridViewRow row = gridInventory.Rows[e.RowIndex];
 
             if (gridInventory.Columns[e.ColumnIndex].Name == "Name")
@@ -329,10 +410,53 @@ namespace QFG5Extractor.Resources.Save
                     }
                 }
             }
+
+            string changedColumn = gridInventory.Columns[e.ColumnIndex].Name;
+            if (session.IsLoaded && (changedColumn == "Name" || changedColumn == "IdHex" || changedColumn == "Amount"))
+                SyncInventoryRow(row);
+            if (hasLoadedSave && (changedColumn == "Name" || changedColumn == "IdHex" || changedColumn == "Amount"))
+                PopulatePalette();
+        }
+
+        private bool SyncInventoryToSession()
+        {
+            if (!session.IsLoaded) return true;
+            foreach (DataGridViewRow row in gridInventory.Rows)
+            {
+                if (row.Cells["Offset"].Value != null && !SyncInventoryRow(row))
+                    return false;
+            }
+            return true;
+        }
+
+        private bool SyncInventoryRow(DataGridViewRow row)
+        {
+            string offsetText = row.Cells["Offset"].Value.ToString();
+            int offset = Convert.ToInt32(offsetText.Substring(2), 16);
+            if (!session.IsActiveInventorySlot(offset)) return true;
+
+            string idHex = row.Cells["IdHex"].Value == null
+                ? "0000"
+                : row.Cells["IdHex"].Value.ToString().ToUpper();
+            if (string.IsNullOrEmpty(idHex)) idHex = "0000";
+            if (idHex.Length != 4 || !Uri.IsHexDigit(idHex[0]) || !Uri.IsHexDigit(idHex[1]) ||
+                !Uri.IsHexDigit(idHex[2]) || !Uri.IsHexDigit(idHex[3]))
+                return false;
+            int amount = 0;
+            if (row.Cells["Amount"].Value != null)
+                int.TryParse(row.Cells["Amount"].Value.ToString(), out amount);
+            parser.UpdateInventoryItem(offset, idHex, amount);
+            return true;
         }
 
         private void BtnDelete_Click(object sender, EventArgs e)
         {
+            if (!CommitPendingEdits())
+            {
+                ShowInvalidItemIdWarning("deleting an item");
+                return;
+            }
+
             int selectedIndex = -1;
             if (gridInventory.SelectedRows.Count > 0)
                 selectedIndex = gridInventory.SelectedRows[0].Index;
@@ -352,13 +476,29 @@ namespace QFG5Extractor.Resources.Save
 
             if (MessageBox.Show("Are you sure you want to delete this item?", "Confirm Delete", MessageBoxButtons.YesNo) == DialogResult.Yes)
             {
-                parser.DeleteInventoryItem(selectedIndex);
+                try
+                {
+                    parser.DeleteInventoryItem(selectedIndex);
+                }
+                catch (InvalidDataException ex)
+                {
+                    MessageBox.Show("Could not delete inventory item: " + ex.Message,
+                        "Invalid Inventory", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    return;
+                }
                 RefreshGrid();
+                PopulatePalette();
             }
         }
 
         private void BtnInsert_Click(object sender, EventArgs e)
         {
+            if (!CommitPendingEdits())
+            {
+                ShowInvalidItemIdWarning("inserting an item");
+                return;
+            }
+
             int selectedIndex = -1;
             if (gridInventory.SelectedRows.Count > 0)
                 selectedIndex = gridInventory.SelectedRows[0].Index;
@@ -370,8 +510,18 @@ namespace QFG5Extractor.Resources.Save
             var items = parser.GetInventory();
             if (selectedIndex < 0 || selectedIndex >= items.Count) return;
 
-            parser.InsertInventoryItem(selectedIndex);
+            try
+            {
+                parser.InsertInventoryItem(selectedIndex);
+            }
+            catch (InvalidDataException ex)
+            {
+                MessageBox.Show("Could not insert inventory item: " + ex.Message,
+                    "Invalid Inventory", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return;
+            }
             RefreshGrid();
+            PopulatePalette();
             
             // Select the newly inserted row
             if (selectedIndex + 1 < gridInventory.Rows.Count)
@@ -384,24 +534,14 @@ namespace QFG5Extractor.Resources.Save
 
         private void BtnSave_Click(object sender, EventArgs e)
         {
-            gridInventory.EndEdit(); // Commit current cell
-
-            foreach (DataGridViewRow row in gridInventory.Rows)
-            {
-                if (row.Cells["Offset"].Value == null) continue;
-                string offsetStr = row.Cells["Offset"].Value.ToString();
-                int offset = Convert.ToInt32(offsetStr.Substring(2), 16);
-                string idHex = row.Cells["IdHex"].Value?.ToString().ToUpper() ?? "0000";
-                int amount = 0;
-                if (row.Cells["Amount"].Value != null)
-                    int.TryParse(row.Cells["Amount"].Value.ToString(), out amount);
-
-                parser.UpdateInventoryItem(offset, idHex, amount);
-            }
-
             try
             {
-                parser.SaveSave();
+                if (!CommitPendingEdits())
+                {
+                    ShowInvalidItemIdWarning("saving");
+                    return;
+                }
+                session.Save();
                 MessageBox.Show("Saved successfully.", "Information", MessageBoxButtons.OK, MessageBoxIcon.Information);
             }
             catch (Exception ex)
@@ -410,104 +550,214 @@ namespace QFG5Extractor.Resources.Save
             }
         }
 
+        public void ShowInvalidItemIdWarning(string action)
+        {
+            MessageBox.Show("Correct the invalid item ID before " + action + ".",
+                "Invalid Item ID", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+        }
+
         private static System.Collections.Generic.Dictionary<string, Image> itemImageCache = new System.Collections.Generic.Dictionary<string, Image>();
 
         private void PopulatePalette()
         {
-            SetStatus("Loading Inventory Palette...", Color.LightBlue);
+            if (!hasLoadedSave) return;
+
+            List<PaletteSection> sections = GetPaletteSections();
+            int itemCount = 0;
+            foreach (PaletteSection section in sections) itemCount += section.Items.Count;
+
+            int requestVersion = ++paletteRefreshVersion;
+            Logger.LogPerf("SaveTab.PopulatePalette START");
+            var swPalette = System.Diagnostics.Stopwatch.StartNew();
+            SetStatus("Loading palette thumbnails...", QFG5Theme.ColorTextGold);
             System.Threading.Tasks.Task.Run(() => {
-                var allItems = ItemDatabase.GetItems();
-                Image frameImg = null;
-                try { 
-                    string framePath = Path.Combine(QFG5Theme.UIKitPath, "qfg-itemFrame.png");
-                    if (!itemImageCache.ContainsKey("frame")) itemImageCache["frame"] = Image.FromFile(framePath);
-                    frameImg = itemImageCache["frame"];
-                } catch { }
-
-                string[] categories = { "Equipment", "Spells", "Items", "Other" };
-                
-                foreach (string cat in categories)
+                try
                 {
-                    var catItems = allItems.FindAll(i => 
-                        (cat == "Other" && i.Category != "Equipment" && i.Category != "Spells" && i.Category != "Items") || 
-                        (i.Category == cat)
-                    );
-                    
-                    if (catItems.Count == 0) continue;
-
-                    this.Invoke((MethodInvoker)delegate {
-                        // Force a new row for each category by adding a full-width spacer if needed or just a clear break
-                        Label lblCat = new Label { 
-                            Text = cat.ToUpper(), 
-                            ForeColor = Color.Gold, 
-                            Font = new Font("Arial", 10, FontStyle.Bold), 
-                            Width = visualGrid.Width - 40, 
-                            Margin = new Padding(10, 20, 10, 10), 
-                            AutoSize = false,
-                            Height = 30
-                        };
-                        visualGrid.Controls.Add(lblCat);
-                        visualGrid.SetFlowBreak(lblCat, true);
-                    });
-
-                    foreach (var item in catItems)
+                    int missingImageCount = 0;
+                    Image frameImg = null;
+                    string framePath = Path.Combine(QFG5Theme.UIKitPath, "qfg-itemFrame.png");
+                    try
                     {
-                        if (item.ID == "0000") continue;
-
-                        Image itemImg = GetItemImage(item.ID, item.Name);
-                        
-                        this.Invoke((MethodInvoker)delegate {
-                            Panel pnl = new Panel { 
-                                Width = 72, Height = 72, Margin = new Padding(4),
-                                BackgroundImage = frameImg,
-                                BackgroundImageLayout = ImageLayout.Stretch
-                            };
-                            
-                            PictureBox pb = new PictureBox
+                        if (File.Exists(framePath))
+                        {
+                            lock (itemImageCache)
                             {
-                                Width = 56, Height = 56,
-                                Location = new Point(8, 8),
-                                BorderStyle = BorderStyle.None,
-                                BackColor = Color.Transparent,
-                                SizeMode = PictureBoxSizeMode.Zoom,
-                                Image = itemImg,
-                                Tag = $"{item.ID}|{item.Name}"
-                            };
+                                if (!itemImageCache.ContainsKey("frame"))
+                                    itemImageCache["frame"] = Image.FromFile(framePath);
+                                frameImg = itemImageCache["frame"];
+                            }
+                        }
+                        else
+                        {
+                            Logger.Log("SaveTab palette frame not found: " + framePath);
+                        }
+                    }
+                    catch (Exception frameException)
+                    {
+                        Logger.Log("SaveTab palette frame could not be loaded: " + frameException.Message);
+                    }
 
-                            pb.MouseDown += (s, e) => {
-                                if (e.Button == MouseButtons.Left) {
-                                    pb.DoDragDrop(pb.Tag, DragDropEffects.Copy);
-                                }
-                            };
-                            
-                            pb.MouseEnter += (s, e) => {
-                                if (this.Tag is Label l) l.Text = item.Name;
-                            };
-                            pb.MouseLeave += (s, e) => {
-                                if (this.Tag is Label l) l.Text = "Hover over an item to see its name...";
-                            };
+                    foreach (PaletteSection section in sections)
+                    {
+                        foreach (PaletteItem item in section.Items)
+                        {
+                            item.Image = GetItemImage(item.IdHex, item.Name);
+                            if (item.Image == null) missingImageCount++;
+                        }
+                    }
 
-                            pb.Click += (s, e) => {
-                                ShowItemPreview(item.ID, item.Name);
-                            };
+                    swPalette.Stop();
+                    Logger.LogPerf("SaveTab.PopulatePalette END: " + swPalette.ElapsedMilliseconds +
+                        " ms (Saved items: " + itemCount + ", Missing thumbnails: " + missingImageCount + ")");
 
-                            pnl.Controls.Add(pb);
-                            visualGrid.Controls.Add(pnl);
+                    if (IsDisposed || !IsHandleCreated) return;
+                    try
+                    {
+                        BeginInvoke((MethodInvoker)delegate
+                        {
+                            if (requestVersion != paletteRefreshVersion || IsDisposed) return;
+                            try
+                            {
+                                RenderPalette(sections, frameImg);
+                                if (itemCount == 0)
+                                    SetStatus("Palette empty: no non-empty saved slots.", QFG5Theme.ColorTextMuted);
+                                else if (missingImageCount > 0)
+                                    SetStatus("Palette ready: " + itemCount + " saved items; " + missingImageCount + " thumbnails unavailable.", QFG5Theme.ColorGold);
+                                else
+                                    SetStatus("Palette ready: " + itemCount + " saved items; all thumbnails available.", QFG5Theme.ColorGoldBright);
+                            }
+                            catch (Exception ex)
+                            {
+                                Logger.Log("SaveTab palette rendering failed: " + ex);
+                                SetStatus("Palette error: " + ex.Message, QFG5Theme.ColorTextPrimary);
+                            }
                         });
                     }
+                    catch (InvalidOperationException ex)
+                    {
+                        Logger.Log("SaveTab palette update could not be posted: " + ex.Message);
+                    }
                 }
-                
-                this.Invoke((MethodInvoker)delegate {
-                    UpdatePaletteItemSizes();
-                    SetStatus("Ready", Color.Gold);
-                });
+                catch (Exception ex)
+                {
+                    swPalette.Stop();
+                    Logger.Log("SaveTab palette loading failed: " + ex);
+                    if (IsDisposed || !IsHandleCreated) return;
+                    try
+                    {
+                        BeginInvoke((MethodInvoker)delegate
+                        {
+                            if (requestVersion == paletteRefreshVersion && !IsDisposed)
+                                SetStatus("Palette error: " + ex.Message, QFG5Theme.ColorTextPrimary);
+                        });
+                    }
+                    catch (InvalidOperationException invokeException)
+                    {
+                        Logger.Log("SaveTab palette error could not be displayed: " + invokeException.Message);
+                    }
+                }
             });
         }
 
+        private List<PaletteSection> GetPaletteSections()
+        {
+            List<PaletteSection> sections = new List<PaletteSection>();
+            Dictionary<string, PaletteSection> sectionsByName =
+                new Dictionary<string, PaletteSection>(StringComparer.OrdinalIgnoreCase);
+
+            foreach (DataGridViewRow row in gridInventory.Rows)
+            {
+                if (row.IsNewRow) continue;
+                SaveGameParser.InventoryItem sourceItem = row.Tag as SaveGameParser.InventoryItem;
+                if (sourceItem != null && sourceItem.IsHeader) continue;
+
+                string idHex = row.Cells["IdHex"].Value == null ? string.Empty : row.Cells["IdHex"].Value.ToString().Trim();
+                if (idHex.Length == 0 || idHex.Equals("0000", StringComparison.OrdinalIgnoreCase)) continue;
+
+                string placeName = row.Cells["Place"].Value == null ? string.Empty : row.Cells["Place"].Value.ToString().Trim();
+                if (placeName.Length == 0) placeName = "Other";
+
+                PaletteSection section;
+                if (!sectionsByName.TryGetValue(placeName, out section))
+                {
+                    section = new PaletteSection { Name = placeName };
+                    sectionsByName.Add(placeName, section);
+                    sections.Add(section);
+                }
+
+                string itemName = row.Cells["Name"].Value == null ? string.Empty : row.Cells["Name"].Value.ToString().Trim();
+                if (itemName.Length == 0) itemName = ItemDatabase.GetName(idHex);
+                section.Items.Add(new PaletteItem { IdHex = idHex.ToUpperInvariant(), Name = itemName });
+            }
+
+            return sections;
+        }
+
+        private void RenderPalette(List<PaletteSection> sections, Image frameImg)
+        {
+            foreach (Control control in visualGrid.Controls) control.Dispose();
+            visualGrid.Controls.Clear();
+
+            foreach (PaletteSection section in sections)
+            {
+                Label lblCat = new Label {
+                    Text = section.Name.ToUpperInvariant(),
+                    ForeColor = QFG5Theme.ColorTextGold,
+                    Font = QFG5Theme.SectionHeaderFont,
+                    Width = visualGrid.Width - 40,
+                    Margin = new Padding(10, 12, 10, 8),
+                    AutoSize = false,
+                    Height = 28
+                };
+                visualGrid.Controls.Add(lblCat);
+                visualGrid.SetFlowBreak(lblCat, true);
+
+                foreach (PaletteItem item in section.Items)
+                {
+                    Panel pnl = new Panel {
+                        Width = 72,
+                        Height = 72,
+                        Margin = new Padding(4),
+                        BackgroundImage = frameImg,
+                        BackgroundImageLayout = ImageLayout.Stretch
+                    };
+
+                    PictureBox pb = new PictureBox
+                    {
+                        Width = 56,
+                        Height = 56,
+                        Location = new Point(8, 8),
+                        BorderStyle = BorderStyle.None,
+                        BackColor = Color.Transparent,
+                        SizeMode = PictureBoxSizeMode.Zoom,
+                        Image = item.Image,
+                        Tag = item.IdHex + "|" + item.Name
+                    };
+
+                    pb.MouseDown += (s, e) => {
+                        if (e.Button == MouseButtons.Left)
+                            pb.DoDragDrop(pb.Tag, DragDropEffects.Copy);
+                    };
+                    pb.MouseEnter += (s, e) => {
+                        if (hoverNameLabel != null) hoverNameLabel.Text = item.Name;
+                    };
+                    pb.MouseLeave += (s, e) => {
+                        if (hoverNameLabel != null) hoverNameLabel.Text = "Hover over an item to see its name...";
+                    };
+                    pb.Click += (s, e) => ShowItemPreview(item.IdHex, item.Name);
+
+                    pnl.Controls.Add(pb);
+                    visualGrid.Controls.Add(pnl);
+                }
+            }
+
+            UpdatePaletteItemSizes();
+        }
+
         private void SetStatus(string msg, Color color) {
-            if (this.Tag is Label l) {
-                l.Text = msg;
-                l.ForeColor = color;
+            if (paletteStatusLabel != null) {
+                paletteStatusLabel.Text = msg;
+                paletteStatusLabel.ForeColor = color;
             }
         }
 
@@ -584,6 +834,14 @@ namespace QFG5Extractor.Resources.Save
         }
 
         private Image GetItemImage(string idHex, string name)
+        {
+            lock (itemImageCache)
+            {
+                return GetItemImageCached(idHex, name);
+            }
+        }
+
+        private Image GetItemImageCached(string idHex, string name)
         {
             // Priority 1: Manual Mapping
             try {

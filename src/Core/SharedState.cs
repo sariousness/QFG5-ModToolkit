@@ -95,7 +95,7 @@ namespace QFG5Extractor.Core
             } catch {}
         }
 
-        public static void SaveSettings()
+        public static bool SaveSettings()
         {
             try {
                 System.Collections.Generic.List<string> lines = new System.Collections.Generic.List<string>();
@@ -104,7 +104,9 @@ namespace QFG5Extractor.Core
                 lines.Add("ModdedFilesPath=" + ModdedFilesPath);
                 lines.Add("GamePath=" + GamePath);
                 System.IO.File.WriteAllLines(SettingsFilePath, lines.ToArray());
+                return true;
             } catch {}
+            return false;
         }
     }
 }

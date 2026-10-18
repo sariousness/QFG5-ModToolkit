@@ -186,22 +186,35 @@ namespace QFG5Extractor.Resources.Gra
                 string err;
                 if (!TryReadMetadata(path, out cX, out cY, out cW, out cH, out nSprites, out err)) return false;
 
-                // Heuristic: If height is much larger than width (e.g. 5x or more), 
-                // it's likely a scanline issue and needs CM (Correction Mode).
-                if (cH > cW * 4 && cW > 0) {
-                    suggestCm = true;
+                if (AnalyzeHeuristics(cW, cH, 0, true, false, out suggestCm))
                     return true;
-                }
                 
                 // Heuristic: Check flags for bit 0
                 int delay, flags;
-                if (TryReadFlags(path, out delay, out flags, out err)) {
-                    if ((flags & 1) != 0) {
-                        suggestCm = true;
-                        return true;
-                    }
-                }
+                bool flagsRead = TryReadFlags(path, out delay, out flags, out err);
+                return AnalyzeHeuristics(cW, cH, flags, true, flagsRead, out suggestCm);
             } catch { }
+            return false;
+        }
+
+        public bool AnalyzeHeuristics(int cW, int cH, int flags, bool metadataRead, bool flagsRead, out bool suggestCm)
+        {
+            suggestCm = false;
+            if (!metadataRead) return false;
+
+            // Heuristic: If height is much larger than width (e.g. 5x or more),
+            // it's likely a scanline issue and needs CM (Correction Mode).
+            if (cH > cW * 4 && cW > 0) {
+                suggestCm = true;
+                return true;
+            }
+
+            // Heuristic: Check flags for bit 0
+            if (flagsRead && (flags & 1) != 0) {
+                suggestCm = true;
+                return true;
+            }
+
             return false;
         }
 

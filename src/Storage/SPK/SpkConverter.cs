@@ -13,6 +13,7 @@ namespace QFG5Extractor.Storage.SPK
             public string FileName;
             public int FileNameLength;
             public int CompressedSize;
+            public int RepackedSize;
             public long ActualOffset;
         }
 
@@ -83,118 +84,142 @@ namespace QFG5Extractor.Storage.SPK
 
             if (entries.Count == 0) throw new Exception("No files found in SPK directory.");
 
-            List<byte[]> replacementData = new List<byte[]>(entries.Count);
+            string payloadSpoolPath = Path.GetTempFileName();
             int replacedCount = 0;
-
-            using (FileStream sourceFs = new FileStream(originalSpkFile, FileMode.Open, FileAccess.Read))
-            using (BinaryReader sourceBr = new BinaryReader(sourceFs))
+            bool repackSucceeded = false;
+            try
             {
-                for (int i = 0; i < entries.Count; i++)
+                using (FileStream spoolFs = new FileStream(payloadSpoolPath, FileMode.Create, FileAccess.ReadWrite))
+                using (FileStream sourceFs = new FileStream(originalSpkFile, FileMode.Open, FileAccess.Read))
+                using (BinaryReader sourceBr = new BinaryReader(sourceFs))
                 {
-                    SpkEntry entry = entries[i];
-                    string modPath = Path.Combine(modifiedFolder, ToSystemPath(entry.FileName));
-
-                    byte[] data;
-                    if (File.Exists(modPath))
+                    for (int i = 0; i < entries.Count; i++)
                     {
-                        data = File.ReadAllBytes(modPath);
-                        replacedCount++;
-                    }
-                    else
-                    {
-                        sourceFs.Seek(entry.ActualOffset, SeekOrigin.Begin);
-                        data = ReadExact(sourceBr, entry.CompressedSize);
-                    }
+                        SpkEntry entry = entries[i];
+                        string modPath = Path.Combine(modifiedFolder, ToSystemPath(entry.FileName));
 
-                    if (data.Length > int.MaxValue - 1024)
-                    {
-                        throw new Exception("File too large to repack safely: " + entry.FileName);
-                    }
+                        if (File.Exists(modPath))
+                        {
+                            using (FileStream modFs = new FileStream(modPath, FileMode.Open, FileAccess.Read))
+                            {
+                                if (modFs.Length > int.MaxValue - 1024)
+                                    throw new Exception("File too large to repack safely: " + entry.FileName);
 
-                    replacementData.Add(data);
+                                entry.RepackedSize = (int)modFs.Length;
+                                CopyStream(modFs, spoolFs, entry.RepackedSize);
+                            }
+                            replacedCount++;
+                        }
+                        else
+                        {
+                            if (entry.CompressedSize > int.MaxValue - 1024)
+                                throw new Exception("File too large to repack safely: " + entry.FileName);
+
+                            entry.RepackedSize = entry.CompressedSize;
+                            sourceFs.Seek(entry.ActualOffset, SeekOrigin.Begin);
+                            CopyStream(sourceFs, spoolFs, entry.RepackedSize);
+                        }
+                    }
                 }
-            }
 
-            string outDir = Path.GetDirectoryName(outputSpkFile);
-            if (!string.IsNullOrEmpty(outDir) && !Directory.Exists(outDir))
-            {
-                Directory.CreateDirectory(outDir);
-            }
-
-            using (FileStream sourceFs = new FileStream(originalSpkFile, FileMode.Open, FileAccess.Read))
-            using (BinaryReader sourceBr = new BinaryReader(sourceFs))
-            using (FileStream outFs = new FileStream(outputSpkFile, FileMode.Create, FileAccess.Write))
-            using (BinaryWriter outBw = new BinaryWriter(outFs))
-            {
-                CopyBytes(sourceBr, outBw, dataPrefixLength);
-
-                for (int i = 0; i < entries.Count; i++)
+                string outDir = Path.GetDirectoryName(outputSpkFile);
+                if (!string.IsNullOrEmpty(outDir) && !Directory.Exists(outDir))
                 {
-                    SpkEntry entry = entries[i];
-                    byte[] nameBytes = Encoding.ASCII.GetBytes(entry.FileName);
-                    byte[] data = replacementData[i];
-                    int newSize = data.Length;
+                    Directory.CreateDirectory(outDir);
+                }
 
-                    if (nameBytes.Length > short.MaxValue)
+                using (FileStream sourceFs = new FileStream(originalSpkFile, FileMode.Open, FileAccess.Read))
+                using (BinaryReader sourceBr = new BinaryReader(sourceFs))
+                using (FileStream spoolFs = new FileStream(payloadSpoolPath, FileMode.Open, FileAccess.Read))
+                using (BinaryReader spoolReader = new BinaryReader(spoolFs))
+                using (FileStream outFs = new FileStream(outputSpkFile, FileMode.Create, FileAccess.Write))
+                using (BinaryWriter outBw = new BinaryWriter(outFs))
+                {
+                    CopyBytes(sourceBr, outBw, dataPrefixLength);
+
+                    for (int i = 0; i < entries.Count; i++)
                     {
-                        throw new Exception("Filename too long to repack: " + entry.FileName);
+                        SpkEntry entry = entries[i];
+                        byte[] nameBytes = Encoding.ASCII.GetBytes(entry.FileName);
+                        int newSize = entry.RepackedSize;
+
+                        if (nameBytes.Length > short.MaxValue)
+                        {
+                            throw new Exception("Filename too long to repack: " + entry.FileName);
+                        }
+
+                        CopyBytes(sourceBr, outBw, 18);
+                        outBw.Write(newSize);
+                        int oldCompressedSize = sourceBr.ReadInt32();
+                        outBw.Write(newSize);
+
+                        sourceFs.Seek(4, SeekOrigin.Current);
+                        outBw.Write((short)nameBytes.Length);
+                        short oldNameLength = sourceBr.ReadInt16();
+
+                        CopyBytes(sourceBr, outBw, 2);
+                        outBw.Write(nameBytes);
+                        sourceFs.Seek(oldNameLength, SeekOrigin.Current);
+
+                        CopyBytes(sourceBr, outBw, 36);
+                        CopyBytes(spoolReader, outBw, newSize);
+                        sourceFs.Seek(oldCompressedSize, SeekOrigin.Current);
                     }
 
-                    CopyBytes(sourceBr, outBw, 18);
-                    outBw.Write(newSize);
-                    int oldCompressedSize = sourceBr.ReadInt32();
-                    outBw.Write(newSize);
+                    long runningRelativeOffset = 0;
+                    long footerVal2 = 0;
+                    long footerVal1 = 0;
 
+                    for (int i = 0; i < entries.Count; i++)
+                    {
+                        SpkEntry entry = entries[i];
+                        byte[] nameBytes = Encoding.ASCII.GetBytes(entry.FileName);
+                        int newSize = entry.RepackedSize;
+
+                        CopyBytes(sourceBr, outBw, 20);
+                        outBw.Write(newSize);
+                        outBw.Write(newSize);
+
+                        sourceFs.Seek(8, SeekOrigin.Current);
+                        outBw.Write(nameBytes.Length);
+                        int oldDirNameLength = sourceBr.ReadInt32();
+
+                        CopyBytes(sourceBr, outBw, 10);
+                        outBw.Write((int)runningRelativeOffset);
+                        sourceFs.Seek(4, SeekOrigin.Current);
+                        outBw.Write(nameBytes);
+                        sourceFs.Seek(oldDirNameLength, SeekOrigin.Current);
+
+                        long span = newSize + 66L + nameBytes.Length;
+                        runningRelativeOffset += span;
+                        footerVal2 += span;
+                        footerVal1 += 46L + nameBytes.Length;
+                    }
+
+                    CopyBytes(sourceBr, outBw, 12);
+                    outBw.Write((int)footerVal1);
                     sourceFs.Seek(4, SeekOrigin.Current);
-                    outBw.Write((short)nameBytes.Length);
-                    short oldNameLength = sourceBr.ReadInt16();
-
+                    outBw.Write((int)footerVal2);
+                    sourceFs.Seek(4, SeekOrigin.Current);
                     CopyBytes(sourceBr, outBw, 2);
-                    outBw.Write(nameBytes);
-                    sourceFs.Seek(oldNameLength, SeekOrigin.Current);
-
-                    CopyBytes(sourceBr, outBw, 36);
-                    outBw.Write(data);
-                    sourceFs.Seek(oldCompressedSize, SeekOrigin.Current);
                 }
 
-                long runningRelativeOffset = 0;
-                long footerVal2 = 0;
-                long footerVal1 = 0;
-
-                for (int i = 0; i < entries.Count; i++)
+                repackSucceeded = true;
+            }
+            finally
+            {
+                if (File.Exists(payloadSpoolPath))
                 {
-                    SpkEntry entry = entries[i];
-                    byte[] nameBytes = Encoding.ASCII.GetBytes(entry.FileName);
-                    byte[] data = replacementData[i];
-                    int newSize = data.Length;
-
-                    CopyBytes(sourceBr, outBw, 20);
-                    outBw.Write(newSize);
-                    outBw.Write(newSize);
-
-                    sourceFs.Seek(8, SeekOrigin.Current);
-                    outBw.Write(nameBytes.Length);
-                    int oldDirNameLength = sourceBr.ReadInt32();
-
-                    CopyBytes(sourceBr, outBw, 10);
-                    outBw.Write((int)runningRelativeOffset);
-                    sourceFs.Seek(4, SeekOrigin.Current);
-                    outBw.Write(nameBytes);
-                    sourceFs.Seek(oldDirNameLength, SeekOrigin.Current);
-
-                    long span = newSize + 66L + nameBytes.Length;
-                    runningRelativeOffset += span;
-                    footerVal2 += span;
-                    footerVal1 += 46L + nameBytes.Length;
+                    try
+                    {
+                        File.Delete(payloadSpoolPath);
+                    }
+                    catch (Exception ex)
+                    {
+                        string outcome = repackSucceeded ? "completed" : "failed";
+                        Logger.LogWarning($"SPK repack {outcome}, but temporary payload spool cleanup failed for {payloadSpoolPath}: {ex.Message}");
+                    }
                 }
-
-                CopyBytes(sourceBr, outBw, 12);
-                outBw.Write((int)footerVal1);
-                sourceFs.Seek(4, SeekOrigin.Current);
-                outBw.Write((int)footerVal2);
-                sourceFs.Seek(4, SeekOrigin.Current);
-                CopyBytes(sourceBr, outBw, 2);
             }
 
             Logger.LogInfo($"Repack complete. Files: {entries.Count}, replaced from mod folder: {replacedCount}");
@@ -273,6 +298,22 @@ namespace QFG5Extractor.Storage.SPK
                 int toRead = remaining > BufferSize ? BufferSize : (int)remaining;
                 int read = source.Read(buffer, 0, toRead);
                 if (read <= 0) throw new EndOfStreamException("Unexpected end of file while copying SPK data.");
+                destination.Write(buffer, 0, read);
+                remaining -= read;
+            }
+        }
+
+        private static void CopyStream(Stream source, Stream destination, long count)
+        {
+            if (count < 0) throw new ArgumentOutOfRangeException("count");
+            const int BufferSize = 64 * 1024;
+            byte[] buffer = new byte[BufferSize];
+            long remaining = count;
+            while (remaining > 0)
+            {
+                int toRead = remaining > BufferSize ? BufferSize : (int)remaining;
+                int read = source.Read(buffer, 0, toRead);
+                if (read <= 0) throw new EndOfStreamException("Unexpected end of file while copying SPK payload.");
                 destination.Write(buffer, 0, read);
                 remaining -= read;
             }

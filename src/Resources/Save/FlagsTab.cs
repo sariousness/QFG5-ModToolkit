@@ -12,11 +12,20 @@ namespace QFG5Extractor.Resources.Save
     {
         private DataGridView gridFlags;
         private List<string> flagNames;
-        private byte[] saveData;
-        private string currentPath;
+        private readonly SaveSession session;
+        private QFG5Button btnSaveFlags;
+        private Label lblLoadedSave;
+        private Label statusLabel;
+        private bool refreshingGrid;
+        private string flagNamesLoadMessage;
 
-        public FlagsTab()
+        public event Action<string> SaveLoadRequested;
+        public event Action SaveRequested;
+
+        public FlagsTab(SaveSession session)
         {
+            if (session == null) throw new ArgumentNullException("session");
+            this.session = session;
             flagNames = new List<string>();
             InitializeComponent();
             LoadFlagNames();
@@ -24,27 +33,27 @@ namespace QFG5Extractor.Resources.Save
 
         private bool GetFlag(int index)
         {
-            if (saveData == null) return false;
+            if (!session.IsLoaded) return false;
             // The actual offset for flags in QFG5 save games is typically further in.
             // Based on analyzing .QG5 structure:
             int startOffset = 0x125B; // Common flag start offset
             int byteOffset = startOffset + (index / 8);
             int bitOffset = index % 8;
-            if (byteOffset >= saveData.Length) return false;
-            return (saveData[byteOffset] & (1 << bitOffset)) != 0;
+            if (byteOffset >= session.Length) return false;
+            return (session.GetByte(byteOffset) & (1 << bitOffset)) != 0;
         }
 
         private void SetFlag(int index, bool value)
         {
-            if (saveData == null) return;
+            if (!session.IsLoaded) return;
             int startOffset = 0x125B;
             int byteOffset = startOffset + (index / 8);
             int bitOffset = index % 8;
-            if (byteOffset >= saveData.Length) return;
+            if (byteOffset >= session.Length) return;
             if (value)
-                saveData[byteOffset] |= (byte)(1 << bitOffset);
+                session.SetByte(byteOffset, (byte)(session.GetByte(byteOffset) | (1 << bitOffset)));
             else
-                saveData[byteOffset] &= (byte)~(1 << bitOffset);
+                session.SetByte(byteOffset, (byte)(session.GetByte(byteOffset) & ~(1 << bitOffset)));
         }
 
         private void InitializeComponent()
@@ -68,28 +77,32 @@ namespace QFG5Extractor.Resources.Save
                     if (ofd.ShowDialog() == DialogResult.OK) LoadSave(ofd.FileName);
                 }
             };
-            QFG5Button btnSave = new QFG5Button { Text = "Save Flags", Width = 130, Height = 30 };
-            btnSave.Click += (s, e) => SaveFlags();
+            btnSaveFlags = new QFG5Button { Text = "Save Flags", Width = 130, Height = 30, Enabled = false };
+            btnSaveFlags.Click += (s, e) => {
+                if (SaveRequested != null) SaveRequested();
+            };
 
             QFG5TableLayoutPanel topPanel = new QFG5TableLayoutPanel {
                 Dock = DockStyle.Fill,
                 ColumnCount = 3,
                 RowCount = 1
             };
+            QFG5Theme.ApplyHeaderStroke(topPanel);
             topPanel.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 138));
             topPanel.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 138));
             topPanel.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100f));
             topPanel.Controls.Add(btnLoad, 0, 0);
-            topPanel.Controls.Add(btnSave, 1, 0);
-            Label lblLoaded = new Label {
+            topPanel.Controls.Add(btnSaveFlags, 1, 0);
+            lblLoadedSave = new Label {
                 Text = "No save loaded",
-                ForeColor = Color.Gray,
+                ForeColor = QFG5Theme.ColorTextMuted,
+                Font = QFG5Theme.BodyFont,
                 Dock = DockStyle.Fill,
                 TextAlign = ContentAlignment.MiddleLeft,
-                Padding = new Padding(12, 0, 0, 0)
+                Padding = new Padding(12, 0, 0, 0),
+                AutoEllipsis = true
             };
-            topPanel.Controls.Add(lblLoaded, 2, 0);
-            this.Tag = lblLoaded;
+            topPanel.Controls.Add(lblLoadedSave, 2, 0);
 
             gridFlags = new DataGridView
             {
@@ -97,21 +110,30 @@ namespace QFG5Extractor.Resources.Save
                 AutoGenerateColumns = false,
                 AllowUserToAddRows = false,
                 AllowUserToDeleteRows = false,
-                BackgroundColor = Color.Black,
-                ForeColor = Color.White,
-                GridColor = Color.FromArgb(40, 40, 40),
+                BackgroundColor = QFG5Theme.ColorBgDark,
+                ForeColor = QFG5Theme.ColorTextPrimary,
+                GridColor = QFG5Theme.ColorBorderOuter,
                 BorderStyle = BorderStyle.None,
                 SelectionMode = DataGridViewSelectionMode.FullRowSelect,
                 RowHeadersVisible = false,
-                AutoSizeColumnsMode = DataGridViewAutoSizeColumnsMode.Fill
+                AutoSizeColumnsMode = DataGridViewAutoSizeColumnsMode.Fill,
+                Font = QFG5Theme.BodyFont,
+                RowTemplate = { Height = 26 },
+                ColumnHeadersHeight = 30
             };
 
-            gridFlags.DefaultCellStyle.BackColor = Color.Black;
-            gridFlags.DefaultCellStyle.ForeColor = Color.White;
-            gridFlags.DefaultCellStyle.SelectionBackColor = Color.FromArgb(100, 100, 110);
-            gridFlags.DefaultCellStyle.SelectionForeColor = Color.White;
-            gridFlags.ColumnHeadersDefaultCellStyle.BackColor = Color.FromArgb(100, 100, 110);
-            gridFlags.ColumnHeadersDefaultCellStyle.ForeColor = Color.White;
+            gridFlags.DefaultCellStyle.BackColor = QFG5Theme.ColorSurfaceRecessed;
+            gridFlags.DefaultCellStyle.ForeColor = QFG5Theme.ColorTextPrimary;
+            gridFlags.DefaultCellStyle.SelectionBackColor = QFG5Theme.ColorBorderHighlight;
+            gridFlags.DefaultCellStyle.SelectionForeColor = QFG5Theme.ColorTextPrimary;
+            gridFlags.DefaultCellStyle.Padding = new Padding(4, 2, 4, 2);
+            gridFlags.AlternatingRowsDefaultCellStyle.BackColor = QFG5Theme.ColorBgDark;
+            gridFlags.AlternatingRowsDefaultCellStyle.ForeColor = QFG5Theme.ColorTextPrimary;
+            gridFlags.ColumnHeadersDefaultCellStyle.BackColor = QFG5Theme.ColorSurface;
+            gridFlags.ColumnHeadersDefaultCellStyle.ForeColor = QFG5Theme.ColorTextGold;
+            gridFlags.ColumnHeadersDefaultCellStyle.Font = QFG5Theme.BodyBoldFont;
+            gridFlags.ColumnHeadersDefaultCellStyle.Alignment = DataGridViewContentAlignment.MiddleLeft;
+            gridFlags.ColumnHeadersDefaultCellStyle.Padding = new Padding(6, 2, 4, 2);
             gridFlags.EnableHeadersVisualStyles = false;
 
             gridFlags.Columns.Add(new DataGridViewTextBoxColumn { Name = "Index", HeaderText = "Index", ReadOnly = true, Width = 60 });
@@ -126,9 +148,10 @@ namespace QFG5Extractor.Resources.Save
             QFG5PreviewFrame gridFrame = new QFG5PreviewFrame { Dock = DockStyle.Fill };
             gridFrame.Controls.Add(gridFlags);
 
-            Label statusLabel = new Label {
-                Text = "Load a QG5 save to edit flags.",
-                ForeColor = Color.Gold,
+            statusLabel = new Label {
+                Text = "Load a QG5 save to view and edit flags.",
+                ForeColor = QFG5Theme.ColorTextMuted,
+                Font = QFG5Theme.BodyFont,
                 Dock = DockStyle.Fill,
                 TextAlign = ContentAlignment.MiddleLeft
             };
@@ -142,9 +165,11 @@ namespace QFG5Extractor.Resources.Save
 
         private void LoadFlagNames()
         {
+            var swFlags = System.Diagnostics.Stopwatch.StartNew();
             string flagPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "flags.dat");
             // Also check parent directories
-            string[] searchPaths = { 
+            string[] searchPaths = {
+                Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "../../../../Resources/QG5Edit/flags.dat"),
                 flagPath, 
                 "flags.dat", 
                 "../flags.dat",
@@ -157,65 +182,142 @@ namespace QFG5Extractor.Resources.Save
                 "/home/vandali/.wine32/drive_c/Program Files/QFG5-RE/QG5Edit/flags.dat"
             };
 
+            int probed = 0;
+            string foundPath = null;
+            flagNames.Clear();
+            flagNamesLoadMessage = null;
             foreach (string p in searchPaths)
             {
+                probed++;
                 if (File.Exists(p))
                 {
-                    flagNames.Clear();
-                    var lines = File.ReadAllLines(p);
-                    foreach (var line in lines)
+                    try
                     {
-                        if (!string.IsNullOrEmpty(line.Trim()))
-                            flagNames.Add(line.Trim());
+                        var lines = File.ReadAllLines(p);
+                        List<string> loadedNames = new List<string>();
+                        foreach (var line in lines)
+                        {
+                            if (!string.IsNullOrEmpty(line.Trim()))
+                                loadedNames.Add(line.Trim());
+                        }
+
+                        if (loadedNames.Count > 0)
+                        {
+                            foundPath = p;
+                            flagNames.AddRange(loadedNames);
+                            break;
+                        }
+
+                        flagNamesLoadMessage = "The flag-name file contains no usable names: " + p;
+                        Logger.Log("FlagsTab: " + flagNamesLoadMessage);
                     }
-                    break;
+                    catch (Exception ex)
+                    {
+                        flagNamesLoadMessage = "Could not read flag-name file " + p + ": " + ex.Message;
+                        Logger.Log("FlagsTab: " + flagNamesLoadMessage);
+                    }
                 }
             }
 
+            if (flagNames.Count == 0 && string.IsNullOrEmpty(flagNamesLoadMessage))
+            {
+                flagNamesLoadMessage = "No flags.dat file was found in the configured locations.";
+                Logger.Log("FlagsTab: " + flagNamesLoadMessage);
+            }
+
             RefreshGrid();
+            UpdateLoadFeedback(null);
+            swFlags.Stop();
+            Logger.LogPerf($"FlagsTab.LoadFlagNames: {swFlags.ElapsedMilliseconds} ms (probed {probed}/{searchPaths.Length} paths, found: {foundPath ?? "none"}, names: {flagNames.Count})");
         }
 
         public void LoadSave(string path)
         {
-            currentPath = path;
-            if (File.Exists(path))
-            {
-                saveData = File.ReadAllBytes(path);
-                // For now, flags are just displayed. Editing is stubbed.
-                RefreshGrid();
-            }
+            if (SaveLoadRequested != null) SaveLoadRequested(path);
+        }
+
+        public void RefreshFromSession()
+        {
+            RefreshGrid();
+            UpdateLoadFeedback(null);
         }
 
         private void RefreshGrid()
         {
-            gridFlags.Rows.Clear();
-            for (int i = 0; i < flagNames.Count; i++)
+            refreshingGrid = true;
+            try
             {
-                bool val = GetFlag(i);
-                gridFlags.Rows.Add(i, flagNames[i], val);
+                gridFlags.Rows.Clear();
+                for (int i = 0; i < flagNames.Count; i++)
+                {
+                    bool val = GetFlag(i);
+                    gridFlags.Rows.Add(i, flagNames[i], val);
+                }
+
+                gridFlags.Columns["Value"].ReadOnly = !session.IsLoaded;
+                btnSaveFlags.Enabled = session.IsLoaded && !string.IsNullOrEmpty(session.FilePath);
+            }
+            finally
+            {
+                refreshingGrid = false;
             }
         }
 
         private void GridFlags_CellValueChanged(object sender, DataGridViewCellEventArgs e)
         {
-            if (e.RowIndex < 0 || gridFlags.Columns[e.ColumnIndex].Name != "Value") return;
+            if (refreshingGrid || !session.IsLoaded || e.RowIndex < 0 || e.ColumnIndex < 0 ||
+                gridFlags.Columns[e.ColumnIndex].Name != "Value") return;
             int flagIndex = (int)gridFlags.Rows[e.RowIndex].Cells["Index"].Value;
             bool newVal = (bool)gridFlags.Rows[e.RowIndex].Cells["Value"].Value;
             SetFlag(flagIndex, newVal);
         }
 
-        private void SaveFlags()
+        public void SaveActiveSession()
         {
-            if (saveData == null || string.IsNullOrEmpty(currentPath)) return;
+            if (!session.IsLoaded || string.IsNullOrEmpty(session.FilePath)) return;
             try
             {
-                File.WriteAllBytes(currentPath, saveData);
+                session.Save();
                 MessageBox.Show("Flags saved successfully.", "Done", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                UpdateLoadFeedback("Flags saved successfully.");
             }
             catch (Exception ex)
             {
                 MessageBox.Show("Error saving flags: " + ex.Message, "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                UpdateLoadFeedback("Error saving flags: " + ex.Message);
             }
+        }
+
+        private void UpdateLoadFeedback(string operationMessage)
+        {
+            if (!session.IsLoaded)
+            {
+                lblLoadedSave.Text = "No save loaded";
+                lblLoadedSave.ForeColor = QFG5Theme.ColorTextMuted;
+
+                if (!string.IsNullOrEmpty(operationMessage))
+                    SetStatus(operationMessage, QFG5Theme.ColorGold);
+                else if (flagNames.Count == 0)
+                    SetStatus("Flag names unavailable. " + flagNamesLoadMessage, QFG5Theme.ColorGold);
+                else
+                    SetStatus(flagNames.Count + " flag names loaded. Load a save to view and edit flags.", QFG5Theme.ColorTextMuted);
+                return;
+            }
+
+            lblLoadedSave.Text = "Loaded: " + session.FilePath;
+            lblLoadedSave.ForeColor = QFG5Theme.ColorTextGold;
+            if (!string.IsNullOrEmpty(operationMessage))
+                SetStatus(operationMessage, QFG5Theme.ColorGoldBright);
+            else if (flagNames.Count == 0)
+                SetStatus("Save loaded, but flag names are unavailable. " + flagNamesLoadMessage, QFG5Theme.ColorGold);
+            else
+                SetStatus("Save loaded. " + flagNames.Count + " flags available.", QFG5Theme.ColorTextGold);
+        }
+
+        private void SetStatus(string message, Color color)
+        {
+            statusLabel.Text = message;
+            statusLabel.ForeColor = color;
         }
     }
 }

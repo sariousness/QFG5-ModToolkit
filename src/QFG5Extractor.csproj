@@ -61,6 +61,7 @@
     <Reference Include="System.Core" />
     <Reference Include="System.Drawing" />
     <Reference Include="System.Windows.Forms" />
+    <Reference Include="Accessibility" />
     <Reference Include="OpenTK">
       <HintPath>OpenTK.dll</HintPath>
       <Private>True</Private>
@@ -71,6 +72,7 @@
     </Reference>
   </ItemGroup>
   <ItemGroup>
+    <Compile Include="Properties\AssemblyInfo.cs" />
     <Compile Include="Program.cs" />
     <Compile Include="Core\MainForm.cs" />
     <Compile Include="Resources\Panorama\PanoTab.cs" />
@@ -94,6 +96,7 @@
     <Compile Include="Storage\SPK\SpkTab.cs" />
     <Compile Include="Storage\SPK\SpkConverter.cs" />
     <Compile Include="Resources\Save\SaveGameParser.cs" />
+    <Compile Include="Resources\Save\SaveSession.cs" />
     <Compile Include="Resources\Save\SaveTab.cs" />
     <Compile Include="Resources\Save\FlagsTab.cs" />
     <Compile Include="Resources\Save\ItemDatabase.cs" />
@@ -110,6 +113,11 @@
     <Compile Include="Resources\Save\IconMapperTab.cs" />
     <Compile Include="Core\TextureEditorTab.cs" />
     <Compile Include="Viewers\Model\GlbExporter.cs" />
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="model_db.json">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
   </ItemGroup>
   <Import Project="$(MSBuildToolsPath)\Microsoft.CSharp.targets" />
 </Project>

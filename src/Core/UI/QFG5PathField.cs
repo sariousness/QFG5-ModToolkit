@@ -1,3 +1,4 @@
+using QFG5Extractor.Core;
 using System;
 using System.Drawing;
 using System.Windows.Forms;
@@ -10,8 +11,34 @@ namespace QFG5Extractor.Core.UI
         
         public new string Text
         {
-            get => textBox.Text;
-            set => textBox.Text = value;
+            get => textBox != null ? textBox.Text : string.Empty;
+            set { if (textBox != null) textBox.Text = value; }
+        }
+
+        public new string AccessibleName
+        {
+            get { return base.AccessibleName; }
+            set
+            {
+                base.AccessibleName = value;
+                if (textBox != null) textBox.AccessibleName = value;
+            }
+        }
+
+        public new string AccessibleDescription
+        {
+            get { return base.AccessibleDescription; }
+            set
+            {
+                base.AccessibleDescription = value;
+                if (textBox != null) textBox.AccessibleDescription = value;
+            }
+        }
+
+        public bool ReadOnly
+        {
+            get => textBox != null && textBox.ReadOnly;
+            set { if (textBox != null) textBox.ReadOnly = value; }
         }
 
         public new event KeyEventHandler KeyDown
@@ -22,32 +49,62 @@ namespace QFG5Extractor.Core.UI
 
         public QFG5PathField()
         {
-            this.Height = 38;
-            this.BackColor = Color.Transparent;
-            this.Padding = new Padding(4, 5, 4, 4);
+            this.Height = 30;
+            this.DoubleBuffered = true;
+            this.BackColor = QFG5Theme.ColorSurfaceRecessed;
+            this.Padding = new Padding(6, 4, 6, 4);
 
             textBox = new TextBox
             {
-                Dock = DockStyle.Fill,
                 BorderStyle = BorderStyle.None,
-                BackColor = Color.Black,
-                ForeColor = Color.White,
-                Font = new Font("Arial", 12, FontStyle.Bold),
-                Multiline = true // Allows it to fill the height of the frame
+                BackColor = QFG5Theme.ColorSurfaceRecessed,
+                ForeColor = QFG5Theme.ColorTextPrimary,
+                Font = QFG5Theme.BodyBoldFont,
+                Multiline = false,
+                AccessibleName = base.AccessibleName,
+                AccessibleDescription = base.AccessibleDescription
             };
+
+            textBox.TextChanged += (s, e) => OnTextChanged(e);
             this.Controls.Add(textBox);
+
+            UpdateTextBoxBounds();
         }
 
-        protected override void OnPaint(PaintEventArgs e)
+        private void UpdateTextBoxBounds()
         {
-            base.OnPaint(e);
-            // Strokes removed for Phase 15 polish
+            if (textBox == null) return;
+            int padX = this.Padding.Left;
+            int availWidth = Math.Max(10, this.ClientSize.Width - padX - this.Padding.Right);
+            int tbHeight = textBox.PreferredHeight;
+            int y = Math.Max(0, (this.ClientSize.Height - tbHeight) / 2);
+            textBox.SetBounds(padX, y, availWidth, tbHeight);
+        }
+
+        protected override void OnLayout(LayoutEventArgs e)
+        {
+            base.OnLayout(e);
+            UpdateTextBoxBounds();
         }
 
         protected override void OnResize(EventArgs e)
         {
             base.OnResize(e);
+            UpdateTextBoxBounds();
             this.Invalidate();
+        }
+
+        protected override void OnPaint(PaintEventArgs e)
+        {
+            base.OnPaint(e);
+            e.Graphics.FillRectangle(QFG5Theme.BrushSurfaceRecessed, this.ClientRectangle);
+            QFG5Theme.DrawRecessedFrame(e.Graphics, this.ClientRectangle);
+        }
+
+        protected override void OnMouseDown(MouseEventArgs e)
+        {
+            base.OnMouseDown(e);
+            if (textBox != null) textBox.Focus();
         }
     }
 }

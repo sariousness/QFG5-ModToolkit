@@ -9,14 +9,16 @@ namespace QFG5Extractor.Core.UI
         public QFG5PreviewFrame()
         {
             this.Size = new Size(200, 200);
-            this.BackColor = Color.Transparent;
+            this.DoubleBuffered = true;
+            this.BackColor = QFG5Theme.ColorSurfaceRecessed;
             this.Padding = new Padding(2);
         }
 
         protected override void OnPaint(PaintEventArgs e)
         {
             base.OnPaint(e);
-            // Strokes removed for Phase 15 polish
+            e.Graphics.FillRectangle(QFG5Theme.BrushSurfaceRecessed, this.ClientRectangle);
+            QFG5Theme.DrawRecessedFrame(e.Graphics, this.ClientRectangle);
         }
 
         protected override void OnResize(EventArgs e)

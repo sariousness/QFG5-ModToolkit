@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Drawing;
 using System.IO;
 using System.Windows.Forms;
@@ -15,9 +16,17 @@ namespace QFG5Extractor.Resources.Gra
         private PictureBox pbPreview;
         private QFG5ProgressBar progressBar;
         private Label lblStatus;
+        private Label lblCurrentAction;
+        private Label lblFileCount;
+        private Label lblFrameInfo;
+        private Label lblDimensions;
+        private QFG5Button btnPlayAnim;
+        private QFG5Button btnLoad;
+        private QFG5Button btnExportMp4;
+        private QFG5Button btnExtract;
         private GraConverter converter;
         private Timer animTimer;
-        private System.Collections.Generic.List<Bitmap> animFrames = new System.Collections.Generic.List<Bitmap>();
+        private List<Bitmap> animFrames = new List<Bitmap>();
         private int currentFrameIdx = 0;
         private bool isPlaying = false;
 
@@ -34,7 +43,6 @@ namespace QFG5Extractor.Resources.Gra
                     graDir = Path.Combine(Path.Combine(path, "cdn"), "gra");
                 if (Directory.Exists(graDir)) {
                     txtInput.Text = graDir;
-                    LoadFiles(graDir);
                 }
             };
             if (!string.IsNullOrEmpty(SharedState.BaseDataPath)) {
@@ -43,7 +51,6 @@ namespace QFG5Extractor.Resources.Gra
                     graDir = Path.Combine(Path.Combine(SharedState.BaseDataPath, "cdn"), "gra");
                 if (Directory.Exists(graDir)) {
                     txtInput.Text = graDir;
-                    LoadFiles(graDir);
                 }
             }
             SharedState.OnExtractionPathChanged += (path) => { txtOutput.Text = path; };
@@ -55,68 +62,154 @@ namespace QFG5Extractor.Resources.Gra
             this.Dock = DockStyle.Fill;
             this.BackColor = Color.Transparent;
 
+            ToolTip toolTip = new ToolTip();
+
             QFG5TableLayoutPanel mainLayout = new QFG5TableLayoutPanel
             {
                 Dock = DockStyle.Fill,
                 ColumnCount = 1,
-                RowCount = 5,
+                RowCount = 3,
                 Padding = new Padding(QFG5Layout.ContentPadding)
             };
-            mainLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, QFG5Layout.RowHeight));
-            mainLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, QFG5Layout.RowHeight));
-            mainLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
-            mainLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, QFG5Layout.ProgressRowHeight));
-            mainLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, QFG5Layout.StatusRowHeight));
+            mainLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 110)); // Collapsible GRA and output paths
+            mainLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 100f)); // Center: Split view (Grid + Preview)
+            mainLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 62));  // Bottom: 2-Row Footer
 
-            QFG5Button btnLoad = new QFG5Button { Text = "Load", Width = QFG5Layout.ButtonWidth, Height = 30 };
-            btnLoad.Click += (s, e) => LoadFiles(txtInput.Text);
-            QFG5Button btnBrowse;
-            QFG5TableLayoutPanel row1 = QFG5Layout.CreatePathRow("GRA Path:", out txtInput, out btnBrowse, btnLoad);
+            // --- Top Section: 2 Symmetrical Path Rows ---
+            QFG5TableLayoutPanel topTable = new QFG5TableLayoutPanel
+            {
+                Dock = DockStyle.Fill,
+                ColumnCount = 4,
+                RowCount = 2,
+                Margin = new Padding(0, 0, 0, 8)
+            };
+            topTable.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, QFG5Layout.LabelWidth)); // 100px
+            topTable.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100f));                    // Stretch
+            topTable.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 95));                    // Browse (95px)
+            topTable.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 95));                    // Load / Action (95px)
+
+            topTable.RowStyles.Add(new RowStyle(SizeType.Absolute, 36)); // Row 0: GRA Path
+            topTable.RowStyles.Add(new RowStyle(SizeType.Absolute, 36)); // Row 1: Output Path
+
+            // Row 0: GRA Path
+            Label lblInput = new Label
+            {
+                Text = "GRA Folder:",
+                ForeColor = QFG5Theme.ColorTextPrimary,
+                Font = QFG5Theme.BodyBoldFont,
+                Dock = DockStyle.Fill,
+                TextAlign = ContentAlignment.MiddleLeft
+            };
+            txtInput = new QFG5PathField { Dock = DockStyle.Fill, Height = 30, Margin = new Padding(0, 3, 4, 3), TabIndex = 0, AccessibleName = "GRA Folder" };
+            txtInput.KeyDown += (s, e) => { if (e.KeyCode == Keys.Enter) LoadFiles(txtInput.Text); };
+            toolTip.SetToolTip(txtInput, "Folder containing Quest for Glory V .GRA animated sprite files (typically in cdn/GRA)");
+
+            QFG5Button btnBrowse = new QFG5Button { Text = "Browse", Dock = DockStyle.Fill, Height = 30, Margin = new Padding(0, 3, 4, 3), TabIndex = 1 };
             btnBrowse.Click += (s, e) => {
                 using (FolderBrowserDialog fbd = new FolderBrowserDialog())
                     if (fbd.ShowDialog() == DialogResult.OK) { txtInput.Text = fbd.SelectedPath; LoadFiles(fbd.SelectedPath); }
             };
+            toolTip.SetToolTip(btnBrowse, "Browse for folder containing .GRA files");
 
-            QFG5Button btnExportMp4 = new QFG5Button { Text = "Export MP4", Width = 110, Height = 30 };
-            btnExportMp4.Click += (s, e) => ExportMP4();
-            QFG5Button btnExtract = new QFG5Button { Text = "Extract Selected", Width = 135, Height = 30 };
-            btnExtract.Click += (s, e) => ExtractSelected();
-            QFG5Button btnBrowseOut;
-            QFG5TableLayoutPanel row2 = QFG5Layout.CreatePathRow("Output:", out txtOutput, out btnBrowseOut, btnExportMp4, btnExtract);
+            btnLoad = new QFG5Button { Text = "Load", Dock = DockStyle.Fill, Height = 30, Margin = new Padding(0, 3, 0, 3), TabIndex = 2 };
+            btnLoad.Click += (s, e) => LoadFiles(txtInput.Text);
+            toolTip.SetToolTip(btnLoad, "Scan and load all .GRA files from the selected folder");
+
+            topTable.Controls.Add(lblInput, 0, 0);
+            topTable.Controls.Add(txtInput, 1, 0);
+            topTable.Controls.Add(btnBrowse, 2, 0);
+            topTable.Controls.Add(btnLoad, 3, 0);
+
+            // Row 1: Output Path
+            Label lblOutput = new Label
+            {
+                Text = "Output Path:",
+                ForeColor = QFG5Theme.ColorTextPrimary,
+                Font = QFG5Theme.BodyBoldFont,
+                Dock = DockStyle.Fill,
+                TextAlign = ContentAlignment.MiddleLeft
+            };
+            txtOutput = new QFG5PathField { Dock = DockStyle.Fill, Height = 30, Margin = new Padding(0, 3, 4, 3), TabIndex = 3, AccessibleName = "Output Path" };
+            toolTip.SetToolTip(txtOutput, "Destination folder for extracted sprite images (.PNG/.BMP) or .MP4 animations");
+
+            QFG5Button btnBrowseOut = new QFG5Button { Text = "Browse", Dock = DockStyle.Fill, Height = 30, Margin = new Padding(0, 3, 4, 3), TabIndex = 4 };
             btnBrowseOut.Click += (s, e) => {
                 using (FolderBrowserDialog fbd = new FolderBrowserDialog())
                     if (fbd.ShowDialog() == DialogResult.OK) txtOutput.Text = fbd.SelectedPath;
             };
+            toolTip.SetToolTip(btnBrowseOut, "Browse for destination output folder");
 
-            // --- Row 3: Split (list | preview) ---
+            // Empty spacer in col 3 on row 1 to maintain grid symmetry
+            Panel row1Spacer = new Panel { Dock = DockStyle.Fill, BackColor = Color.Transparent };
+
+            topTable.Controls.Add(lblOutput, 0, 1);
+            topTable.Controls.Add(txtOutput, 1, 1);
+            topTable.Controls.Add(btnBrowseOut, 2, 1);
+            topTable.Controls.Add(row1Spacer, 3, 1);
+
+            // --- Center Section: Split View (Resource Grid + Sprite Preview) ---
             SplitContainer split = new SplitContainer
             {
                 Dock = DockStyle.Fill,
                 Orientation = Orientation.Vertical,
-                BorderStyle = BorderStyle.None
+                BorderStyle = BorderStyle.None,
+                SplitterWidth = 6,
+                Margin = new Padding(0, 0, 0, 6)
             };
             split.Panel1.BackColor = Color.Transparent;
             split.Panel2.BackColor = Color.Transparent;
-            QFG5Layout.SetSplitterRatioOnce(split, 0.55);
+            QFG5Layout.SetSplitterRatioOnce(split, 0.58);
 
+            // Panel 1: Grid Frame
             QFG5PreviewFrame gridFrame = new QFG5PreviewFrame { Dock = DockStyle.Fill };
+            QFG5TableLayoutPanel listSide = new QFG5TableLayoutPanel
+            {
+                Dock = DockStyle.Fill,
+                ColumnCount = 1,
+                RowCount = 3
+            };
+            listSide.RowStyles.Add(new RowStyle(SizeType.Absolute, 24)); // Top Header
+            listSide.RowStyles.Add(new RowStyle(SizeType.Percent, 100f)); // DataGridView
+            listSide.RowStyles.Add(new RowStyle(SizeType.Absolute, 34)); // Batch Selection Bar
+
+            Label lblGridHeader = new Label
+            {
+                Text = " GRA RESOURCES ",
+                ForeColor = QFG5Theme.ColorGold,
+                Font = QFG5Theme.SectionHeaderFont,
+                Dock = DockStyle.Fill,
+                TextAlign = ContentAlignment.MiddleLeft,
+                BackColor = Color.FromArgb(20, 16, 12),
+                Padding = new Padding(6, 0, 0, 0)
+            };
+            listSide.Controls.Add(lblGridHeader, 0, 0);
+
             gridFiles = new DataGridView
             {
                 Dock = DockStyle.Fill,
-                BackgroundColor = Color.Black,
-                ForeColor = Color.White,
+                BackgroundColor = Color.FromArgb(16, 12, 10),
+                ForeColor = QFG5Theme.ColorTextPrimary,
                 BorderStyle = BorderStyle.None,
                 SelectionMode = DataGridViewSelectionMode.FullRowSelect,
                 RowHeadersVisible = false,
                 AllowUserToAddRows = false,
                 AutoSizeColumnsMode = DataGridViewAutoSizeColumnsMode.Fill,
-                GridColor = Color.FromArgb(40, 40, 40),
-                MultiSelect = true
+                GridColor = Color.FromArgb(45, 35, 28),
+                MultiSelect = true,
+                AutoGenerateColumns = false,
+                AllowUserToResizeRows = false,
+                RowHeadersWidth = 4,
+                TabIndex = 5
             };
-            gridFiles.DefaultCellStyle.BackColor = Color.Black;
-            gridFiles.DefaultCellStyle.ForeColor = Color.White;
-            gridFiles.ColumnHeadersDefaultCellStyle.BackColor = Color.FromArgb(30, 30, 30);
-            gridFiles.ColumnHeadersDefaultCellStyle.ForeColor = Color.Gold;
+            gridFiles.DefaultCellStyle.BackColor = Color.FromArgb(16, 12, 10);
+            gridFiles.DefaultCellStyle.ForeColor = QFG5Theme.ColorTextPrimary;
+            gridFiles.DefaultCellStyle.SelectionBackColor = Color.FromArgb(60, 48, 32);
+            gridFiles.DefaultCellStyle.SelectionForeColor = QFG5Theme.ColorGoldBright;
+            gridFiles.ColumnHeadersDefaultCellStyle.BackColor = Color.FromArgb(28, 22, 18);
+            gridFiles.ColumnHeadersDefaultCellStyle.ForeColor = QFG5Theme.ColorGold;
+            gridFiles.ColumnHeadersDefaultCellStyle.Font = QFG5Theme.BodyBoldFont;
+            gridFiles.RowHeadersDefaultCellStyle.BackColor = Color.FromArgb(16, 12, 10);
+            gridFiles.RowHeadersDefaultCellStyle.ForeColor = QFG5Theme.ColorTextPrimary;
             gridFiles.EnableHeadersVisualStyles = false;
 
             gridFiles.Columns.Add("File", "Filename");
@@ -180,86 +273,275 @@ namespace QFG5Extractor.Resources.Gra
                 if (e.ColumnIndex == gridFiles.Columns["Mode"].Index || e.ColumnIndex == gridFiles.Columns["CM"].Index)
                     UpdatePreview();
             };
+            listSide.Controls.Add(gridFiles, 0, 1);
 
-            Panel centerWrapper = new Panel { Dock = DockStyle.Fill, Height = 40 };
-            FlowLayoutPanel inner = new FlowLayoutPanel {
-                AutoSize = true,
-                FlowDirection = FlowDirection.LeftToRight,
-                Location = new Point(0, 0)
+            // Batch selection toolbar
+            QFG5FlowLayoutPanel batchToolbar = new QFG5FlowLayoutPanel
+            {
+                Dock = DockStyle.Fill,
+                BackColor = Color.FromArgb(20, 16, 12),
+                Padding = new Padding(4, 2, 4, 2),
+                WrapContents = false
             };
-            QFG5Button btnAll = new QFG5Button { Text = "PNG All", Width = 100, Height = 32 };
+
+            QFG5Button btnAll = new QFG5Button { Text = "PNG All", Width = 80, Height = 28, Margin = new Padding(0, 0, 4, 0), TabIndex = 6 };
             btnAll.Click += (s, e) => SetAllCheckboxes("PNG", true);
-            QFG5Button btnNone = new QFG5Button { Text = "PNG None", Width = 100, Height = 32 };
+            toolTip.SetToolTip(btnAll, "Check PNG export on all rows");
+
+            QFG5Button btnNone = new QFG5Button { Text = "PNG None", Width = 80, Height = 28, Margin = new Padding(0, 0, 8, 0), TabIndex = 7 };
             btnNone.Click += (s, e) => SetAllCheckboxes("PNG", false);
+            toolTip.SetToolTip(btnNone, "Uncheck PNG export on all rows");
 
-            QFG5Button btnMP4All = new QFG5Button { Text = "MP4 All", Width = 100, Height = 30 };
-            QFG5Button btnMP4None = new QFG5Button { Text = "MP4 None", Width = 100, Height = 30 };
+            QFG5Button btnMP4All = new QFG5Button { Text = "MP4 All", Width = 80, Height = 28, Margin = new Padding(0, 0, 4, 0), TabIndex = 8 };
             btnMP4All.Click += (s, e) => SetAllCheckboxes("MP4", true);
+            toolTip.SetToolTip(btnMP4All, "Check MP4 export on all rows");
+
+            QFG5Button btnMP4None = new QFG5Button { Text = "MP4 None", Width = 80, Height = 28, Margin = new Padding(0, 0, 8, 0), TabIndex = 9 };
             btnMP4None.Click += (s, e) => SetAllCheckboxes("MP4", false);
-            inner.Controls.Add(btnAll);
-            inner.Controls.Add(btnNone);
-            inner.Controls.Add(new Label { Width = 10 });
-            inner.Controls.Add(btnMP4All);
-            inner.Controls.Add(btnMP4None);
-            centerWrapper.Controls.Add(inner);
-            centerWrapper.Resize += (s, e) => {
-                inner.Location = new Point((centerWrapper.Width - inner.Width) / 2, (centerWrapper.Height - inner.Height) / 2);
+            toolTip.SetToolTip(btnMP4None, "Uncheck MP4 export on all rows");
+
+            Label lblBatchHint = new Label
+            {
+                Text = "(Shift+Click checkbox to toggle selected)",
+                ForeColor = QFG5Theme.ColorTextMuted,
+                Font = QFG5Theme.CaptionFont,
+                AutoSize = true,
+                Margin = new Padding(4, 7, 0, 0)
             };
-            inner.Location = new Point((centerWrapper.Width - inner.Width) / 2, (centerWrapper.Height - inner.Height) / 2);
 
-            QFG5TableLayoutPanel listSide = new QFG5TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 2 };
-            listSide.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
-            listSide.RowStyles.Add(new RowStyle(SizeType.Absolute, 85));
-            listSide.Controls.Add(gridFiles, 0, 0);
-            listSide.Controls.Add(centerWrapper, 0, 1);
+            batchToolbar.Controls.Add(btnAll);
+            batchToolbar.Controls.Add(btnNone);
+            batchToolbar.Controls.Add(btnMP4All);
+            batchToolbar.Controls.Add(btnMP4None);
+            batchToolbar.Controls.Add(lblBatchHint);
 
-            gridFrame.Controls.Clear();
+            listSide.Controls.Add(batchToolbar, 0, 2);
             gridFrame.Controls.Add(listSide);
-
             split.Panel1.Controls.Add(gridFrame);
-            QFG5TableLayoutPanel previewLayout = new QFG5TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 2 };
-            previewLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
-            previewLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 45));
 
+            // Panel 2: Preview Frame + Animation Controls
             QFG5PreviewFrame previewFrame = new QFG5PreviewFrame { Dock = DockStyle.Fill };
-            pbPreview = new PictureBox { Dock = DockStyle.Fill, SizeMode = PictureBoxSizeMode.Zoom, BackColor = Color.Black };
-            previewFrame.Controls.Add(pbPreview);
-            previewLayout.Controls.Add(previewFrame, 0, 0);
+            QFG5TableLayoutPanel previewLayout = new QFG5TableLayoutPanel
+            {
+                Dock = DockStyle.Fill,
+                ColumnCount = 1,
+                RowCount = 3
+            };
+            previewLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 24)); // Top Header
+            previewLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 100f)); // PictureBox
+            previewLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 36)); // Playbar
 
-            Panel playPanel = new Panel { Dock = DockStyle.Fill, Padding = new Padding(0, 5, 0, 0) };
-            QFG5Button btnPlayAnim = new QFG5Button { Text = "▶ Play Anim", Dock = DockStyle.Fill, Height = 30 };
+            Label lblPreviewHeader = new Label
+            {
+                Text = " SPRITE / ANIMATION PREVIEW ",
+                ForeColor = QFG5Theme.ColorGold,
+                Font = QFG5Theme.SectionHeaderFont,
+                Dock = DockStyle.Fill,
+                TextAlign = ContentAlignment.MiddleLeft,
+                BackColor = Color.FromArgb(20, 16, 12),
+                Padding = new Padding(6, 0, 0, 0)
+            };
+            QFG5Theme.ApplyHeaderStroke(lblPreviewHeader);
+            previewLayout.Controls.Add(lblPreviewHeader, 0, 0);
+
+            pbPreview = new PictureBox
+            {
+                Dock = DockStyle.Fill,
+                SizeMode = PictureBoxSizeMode.Zoom,
+                BackColor = Color.FromArgb(16, 12, 10)
+            };
+            pbPreview.Paint += (s, pe) => {
+                if (pbPreview.Image == null)
+                {
+                    string emptyMsg = gridFiles.Rows.Count == 0
+                        ? "No GRA folder loaded.\n\nClick 'Load' above to scan and inspect GRA sprite files."
+                        : "No GRA sprite selected.\n\nSelect a sprite from the list to preview frames and animations.";
+                    using (var sf = new StringFormat { Alignment = StringAlignment.Center, LineAlignment = StringAlignment.Center })
+                    using (var brush = new SolidBrush(QFG5Theme.ColorTextMuted))
+                    {
+                        pe.Graphics.DrawString(emptyMsg, QFG5Theme.BodyFont, brush, pbPreview.ClientRectangle, sf);
+                    }
+                }
+            };
+            toolTip.SetToolTip(pbPreview, "Preview of the selected sprite frame or animation");
+            previewLayout.Controls.Add(pbPreview, 0, 1);
+
+            // Animation playback bar
+            QFG5TableLayoutPanel playbar = new QFG5TableLayoutPanel
+            {
+                Dock = DockStyle.Fill,
+                ColumnCount = 3,
+                RowCount = 1,
+                BackColor = Color.FromArgb(20, 16, 12),
+                Padding = new Padding(4, 3, 6, 3),
+                Margin = new Padding(0)
+            };
+            playbar.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 115)); // Play Button
+            playbar.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100f));  // Frame Info
+            playbar.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 100)); // Dimensions
+
+            btnPlayAnim = new QFG5Button { Text = "▶ Play Anim", Dock = DockStyle.Fill, Height = 28, Enabled = false, TabIndex = 10 };
             btnPlayAnim.Click += (s, e) => TogglePlay();
-            playPanel.Controls.Add(btnPlayAnim);
-            previewLayout.Controls.Add(playPanel, 0, 1);
+            toolTip.SetToolTip(btnPlayAnim, "Play or pause the multi-frame sprite animation");
 
-            split.Panel2.Controls.Add(previewLayout);
+            lblFrameInfo = new Label
+            {
+                Text = "Frame: - / -",
+                ForeColor = QFG5Theme.ColorTextGold,
+                Font = QFG5Theme.BodyBoldFont,
+                Dock = DockStyle.Fill,
+                TextAlign = ContentAlignment.MiddleLeft,
+                Padding = new Padding(8, 0, 0, 0)
+            };
 
-            progressBar = new QFG5ProgressBar { Dock = DockStyle.Fill, Height = 25 };
+            lblDimensions = new Label
+            {
+                Text = "-",
+                ForeColor = QFG5Theme.ColorTextMuted,
+                Font = QFG5Theme.CaptionFont,
+                Dock = DockStyle.Fill,
+                TextAlign = ContentAlignment.MiddleRight
+            };
 
-            QFG5FlowLayoutPanel statusRow = new QFG5FlowLayoutPanel { Dock = DockStyle.Fill };
-            lblStatus = new Label { Text = "Ready", ForeColor = Color.Gold, AutoSize = true, Margin = new Padding(0, 5, 0, 0) };
-            statusRow.Controls.Add(lblStatus);
+            playbar.Controls.Add(btnPlayAnim, 0, 0);
+            playbar.Controls.Add(lblFrameInfo, 1, 0);
+            playbar.Controls.Add(lblDimensions, 2, 0);
 
-            mainLayout.Controls.Add(row1, 0, 0);
-            mainLayout.Controls.Add(row2, 0, 1);
-            mainLayout.Controls.Add(split, 0, 2);
-            mainLayout.Controls.Add(progressBar, 0, 3);
-            mainLayout.Controls.Add(statusRow, 0, 4);
+            previewLayout.Controls.Add(playbar, 0, 2);
+            previewFrame.Controls.Add(previewLayout);
+            split.Panel2.Controls.Add(previewFrame);
+
+            // --- Bottom Section: 2-Row Cohesive Footer ---
+            QFG5TableLayoutPanel footerTable = new QFG5TableLayoutPanel
+            {
+                Dock = DockStyle.Fill,
+                ColumnCount = 2,
+                RowCount = 2,
+                Margin = new Padding(0, 4, 0, 0)
+            };
+            footerTable.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100f)); // Left status/info
+            footerTable.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 260));  // Right progress / action buttons
+
+            footerTable.RowStyles.Add(new RowStyle(SizeType.Absolute, 26)); // Row 0: Status + Progress
+            footerTable.RowStyles.Add(new RowStyle(SizeType.Absolute, 32)); // Row 1: File Info + Actions
+
+            // Row 0: High-Level Status + Progress Bar
+            lblStatus = new Label
+            {
+                Text = "No GRA folder loaded",
+                ForeColor = QFG5Theme.ColorGold,
+                Font = QFG5Theme.BodyBoldFont,
+                Dock = DockStyle.Fill,
+                TextAlign = ContentAlignment.MiddleLeft,
+                AutoEllipsis = true
+            };
+
+            progressBar = new QFG5ProgressBar
+            {
+                Height = 20,
+                Dock = DockStyle.Fill,
+                Margin = new Padding(0, 3, 0, 3),
+                AccessibleName = "Sprite extraction progress"
+            };
+
+            footerTable.Controls.Add(lblStatus, 0, 0);
+            footerTable.Controls.Add(progressBar, 1, 0);
+
+            // Row 1: Detailed File Info + Action Buttons
+            QFG5FlowLayoutPanel fileInfoPanel = new QFG5FlowLayoutPanel
+            {
+                Dock = DockStyle.Fill,
+                Margin = new Padding(0),
+                WrapContents = false
+            };
+
+            lblCurrentAction = new Label
+            {
+                Text = "Status: Idle",
+                ForeColor = QFG5Theme.ColorTextPrimary,
+                Font = QFG5Theme.BodyFont,
+                AutoSize = true,
+                Margin = new Padding(0, 6, 8, 0)
+            };
+
+            lblFileCount = new Label
+            {
+                Text = "(0 resources loaded)",
+                ForeColor = QFG5Theme.ColorTextMuted,
+                Font = QFG5Theme.CaptionFont,
+                AutoSize = true,
+                Margin = new Padding(0, 7, 0, 0)
+            };
+
+            fileInfoPanel.Controls.Add(lblCurrentAction);
+            fileInfoPanel.Controls.Add(lblFileCount);
+
+            // Right-aligned action buttons container
+            QFG5TableLayoutPanel actionButtonsPanel = new QFG5TableLayoutPanel
+            {
+                Dock = DockStyle.Fill,
+                ColumnCount = 2,
+                RowCount = 1,
+                Margin = new Padding(0)
+            };
+            actionButtonsPanel.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 44f)); // Export MP4
+            actionButtonsPanel.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 56f)); // Extract Selected
+
+            btnExportMp4 = new QFG5Button { Text = "Export MP4", Dock = DockStyle.Fill, Height = 30, Margin = new Padding(0, 1, 4, 1), TabIndex = 11 };
+            btnExportMp4.Click += (s, e) => ExportMP4();
+            toolTip.SetToolTip(btnExportMp4, "Export selected sprites as MP4 video animations");
+
+            btnExtract = new QFG5Button { Text = "Extract Selected", Dock = DockStyle.Fill, Height = 30, Margin = new Padding(2, 1, 0, 1), TabIndex = 12 };
+            btnExtract.Click += (s, e) => ExtractSelected();
+            toolTip.SetToolTip(btnExtract, "Extract checked sprites/animations from selected rows into destination folder");
+
+            actionButtonsPanel.Controls.Add(btnExportMp4, 0, 0);
+            actionButtonsPanel.Controls.Add(btnExtract, 1, 0);
+
+            footerTable.Controls.Add(fileInfoPanel, 0, 1);
+            footerTable.Controls.Add(actionButtonsPanel, 1, 1);
+
+            // Assemble main layout
+            mainLayout.Controls.Add(new QFG5CollapsibleSection("SPRITE FOLDERS", topTable, 110), 0, 0);
+            mainLayout.Controls.Add(split, 0, 1);
+            mainLayout.Controls.Add(footerTable, 0, 2);
 
             this.Controls.Add(mainLayout);
         }
 
-
-
         private void LoadFiles(string path)
         {
+            Logger.LogPerf("GraTab.LoadFiles START");
+            var swGra = System.Diagnostics.Stopwatch.StartNew();
+
+            if (animTimer != null && animTimer.Enabled) animTimer.Stop();
+            isPlaying = false;
+            btnPlayAnim.Text = "▶ Play Anim";
+            btnPlayAnim.Enabled = false;
+            lblFrameInfo.Text = "Frame: - / -";
+            lblDimensions.Text = "-";
+
+            if (pbPreview != null && pbPreview.Image != null)
+            {
+                pbPreview.Image = null;
+            }
+            if (animFrames != null) {
+                foreach (var f in animFrames) f.Dispose();
+                animFrames.Clear();
+            }
+
             gridFiles.Rows.Clear();
             if (!Directory.Exists(path)) {
                 lblStatus.Text = "Folder not found: " + path;
+                lblCurrentAction.Text = "Status: Idle";
+                lblFileCount.Text = "(0 resources loaded)";
+                pbPreview.Invalidate();
+                swGra.Stop();
+                Logger.LogPerf($"GraTab.LoadFiles END: folder not found {path} ({swGra.ElapsedMilliseconds} ms)");
                 return;
             }
 
-            var files = new System.Collections.Generic.List<string>();
+            var files = new List<string>();
             foreach (var f in Directory.GetFiles(path))
             {
                 string ext = Path.GetExtension(f);
@@ -267,26 +549,41 @@ namespace QFG5Extractor.Resources.Gra
                     files.Add(f);
             }
             files.Sort(StringComparer.OrdinalIgnoreCase);
+            Logger.LogPerf($"GRA files discovered: {files.Count}");
 
+            var swAnalysis = System.Diagnostics.Stopwatch.StartNew();
+            int inspectedCount = 0;
+            int headerReadCount = 0;
+            int metadataReadCount = 0;
+            int flagReadCount = 0;
+            int duplicateFlagReadsAvoided = 0;
             foreach (var f in files)
             {
+                inspectedCount++;
                 FileInfo fi = new FileInfo(f);
                 int mode = -1, cols = 0;
                 string errMsg;
+                headerReadCount++;
                 converter.TryReadHeader(f, out mode, out cols, out errMsg);
 
                 int cX, cY, cW, cH, nSprites;
-                if (!converter.TryReadMetadata(f, out cX, out cY, out cW, out cH, out nSprites, out errMsg))
+                metadataReadCount++;
+                bool metadataRead = converter.TryReadMetadata(f, out cX, out cY, out cW, out cH, out nSprites, out errMsg);
+                if (!metadataRead)
                     cX = cY = cW = cH = nSprites = 0;
 
                 int delay, flags;
                 bool cmAuto = false;
-                if (converter.TryReadFlags(f, out delay, out flags, out errMsg))
+                flagReadCount++;
+                bool flagsRead = converter.TryReadFlags(f, out delay, out flags, out errMsg);
+                if (flagsRead)
                     cmAuto = (flags & 1) != 0; // bit 0 = column-major
 
                 // Smart heuristic overlay
                 bool suggestCm;
-                if (converter.AnalyzeHeuristics(f, out suggestCm)) {
+                if (metadataRead && !(cH > cW * 4 && cW > 0))
+                    duplicateFlagReadsAvoided++;
+                if (converter.AnalyzeHeuristics(cW, cH, flags, metadataRead, flagsRead, out suggestCm)) {
                     if (suggestCm) cmAuto = true;
                 }
 
@@ -298,7 +595,18 @@ namespace QFG5Extractor.Resources.Gra
                 // Row: File, Mode, CM(auto), Cols, Dims, Offs, Sprites, Flags, PNG(false), MP4(false)
                 gridFiles.Rows.Add(fi.Name, mode >= 0 ? mode.ToString() : "?", cmAuto, cols > 0 ? cols.ToString() : "?", dims, offs, spr, flagStr, false, false);
             }
+            swAnalysis.Stop();
+            swGra.Stop();
+            double avgPerFile = inspectedCount > 0 ? (double)swAnalysis.ElapsedMilliseconds / inspectedCount : 0.0;
+            Logger.LogPerf($"GRA files inspected: {inspectedCount}");
+            Logger.LogPerf($"GRA file reads: header={headerReadCount}, metadata={metadataReadCount}, flags={flagReadCount}; heuristic duplicate reads avoided: metadata={inspectedCount}, flags={duplicateFlagReadsAvoided}");
+            Logger.LogPerf($"GRA analysis total: {swAnalysis.ElapsedMilliseconds} ms");
+            Logger.LogPerf($"GRA average analysis: {avgPerFile:F2} ms/file");
+            Logger.LogPerf($"GraTab.LoadFiles END: {swGra.ElapsedMilliseconds} ms");
             lblStatus.Text = $"Loaded {gridFiles.Rows.Count} GRA files";
+            lblCurrentAction.Text = "Status: Idle";
+            lblFileCount.Text = $"({gridFiles.Rows.Count} resources loaded)";
+            pbPreview.Invalidate();
         }
 
         private void UpdatePreview()
@@ -322,24 +630,38 @@ namespace QFG5Extractor.Resources.Gra
                 if (pbPreview.Image != null) { pbPreview.Image = null; }
                 if (animTimer != null) animTimer.Stop();
                 isPlaying = false;
-                
+                btnPlayAnim.Text = "▶ Play Anim";
+
                 foreach (var f in animFrames) f.Dispose();
                 animFrames.Clear();
 
                 lblStatus.Text = "Decoding: " + filename + "…";
+                lblCurrentAction.Text = "Decoding: " + filename;
                 Application.DoEvents();
                 animFrames = converter.DecodeAllFrames(path, modeOverride, cmOverride);
                 if (animFrames != null && animFrames.Count > 0) {
                     currentFrameIdx = animFrames.Count - 1;
                     pbPreview.Image = animFrames[currentFrameIdx];
                     lblStatus.Text = $"Previewing: {filename} ({animFrames[0].Width}x{animFrames[0].Height}, {animFrames.Count} frames)";
+                    lblCurrentAction.Text = "Previewing: " + filename;
+                    lblFrameInfo.Text = $"Frame: {currentFrameIdx + 1} / {animFrames.Count}";
+                    lblDimensions.Text = $"{animFrames[0].Width} x {animFrames[0].Height}";
+                    btnPlayAnim.Enabled = animFrames.Count > 1;
                 } else {
                     lblStatus.Text = $"Could not decode: {filename}";
+                    lblCurrentAction.Text = "Decode failed";
+                    lblFrameInfo.Text = "Frame: - / -";
+                    lblDimensions.Text = "-";
+                    btnPlayAnim.Enabled = false;
                 }
+                pbPreview.Invalidate();
             }
             catch (Exception ex)
             {
                 lblStatus.Text = "Preview error: " + ex.Message;
+                lblCurrentAction.Text = "Error";
+                btnPlayAnim.Enabled = false;
+                pbPreview.Invalidate();
             }
         }
 
@@ -348,15 +670,20 @@ namespace QFG5Extractor.Resources.Gra
             if (animFrames == null || animFrames.Count == 0) return;
             currentFrameIdx = (currentFrameIdx + 1) % animFrames.Count;
             pbPreview.Image = animFrames[currentFrameIdx];
+            lblFrameInfo.Text = $"Frame: {currentFrameIdx + 1} / {animFrames.Count}";
         }
 
         private void TogglePlay()
         {
             if (isPlaying) {
-                animTimer.Stop(); isPlaying = false;
+                animTimer.Stop();
+                isPlaying = false;
+                btnPlayAnim.Text = "▶ Play Anim";
             } else {
                 if (animFrames != null && animFrames.Count > 1) {
-                    animTimer.Start(); isPlaying = true;
+                    animTimer.Start();
+                    isPlaying = true;
+                    btnPlayAnim.Text = "⏸ Pause";
                 }
             }
         }
@@ -382,6 +709,7 @@ namespace QFG5Extractor.Resources.Gra
                 string dest = Path.Combine(outDir, Path.GetFileNameWithoutExtension(fileName) + ".mp4");
 
                 lblStatus.Text = "Exporting MP4: " + fileName + "…";
+                lblCurrentAction.Text = "Exporting: " + fileName;
                 Application.DoEvents();
 
                 int modeOverride = -1;
@@ -396,6 +724,7 @@ namespace QFG5Extractor.Resources.Gra
                 progressBar.Value = (int)((processed / (float)total) * 100);
             }
             lblStatus.Text = $"MP4 Export complete. {succeeded} paths done. {failed} failed.";
+            lblCurrentAction.Text = "Status: Finished";
         }
 
         private void SetAllCheckboxes(string columnName, bool value)
@@ -439,6 +768,7 @@ namespace QFG5Extractor.Resources.Gra
                     // Export as MP4 (takes priority if both checked, or runs alongside PNG)
                     string mp4Dest = Path.Combine(outDir, Path.GetFileNameWithoutExtension(fileName) + ".mp4");
                     lblStatus.Text = "Exporting MP4: " + fileName + "…";
+                    lblCurrentAction.Text = "Exporting: " + fileName;
                     Application.DoEvents();
                     bool ok = converter.ExportToMP4(fullPath, mp4Dest, modeOverride, cmOverride);
                     if (ok) succeeded++; else { failed++; Logger.Log($"GraTab MP4: {fileName} failed"); }
@@ -449,6 +779,7 @@ namespace QFG5Extractor.Resources.Gra
                     string ext  = exportPNG ? ".png" : ".bmp";
                     string dest = Path.Combine(outDir, Path.GetFileNameWithoutExtension(fileName) + ext);
                     lblStatus.Text = "Extracting " + fileName + "…";
+                    lblCurrentAction.Text = "Extracting: " + fileName;
                     Application.DoEvents();
                     try {
                         bool ok = converter.Extract(fullPath, dest, exportPNG, modeOverride, cmOverride);
@@ -463,8 +794,28 @@ namespace QFG5Extractor.Resources.Gra
                 progressBar.Value = (int)((float)(succeeded + failed) / total * 100);
             }
             lblStatus.Text = $"Done: {succeeded} extracted, {failed} failed.";
+            lblCurrentAction.Text = "Status: Finished";
             if (failed == 0) MessageBox.Show("Extraction complete.");
             else MessageBox.Show($"Done with {failed} error(s). Check the log for details.");
+        }
+
+        protected override void Dispose(bool disposing)
+        {
+            if (disposing)
+            {
+                if (animTimer != null)
+                {
+                    animTimer.Stop();
+                    animTimer.Dispose();
+                    animTimer = null;
+                }
+                if (animFrames != null)
+                {
+                    foreach (var f in animFrames) f.Dispose();
+                    animFrames.Clear();
+                }
+            }
+            base.Dispose(disposing);
         }
     }
 }

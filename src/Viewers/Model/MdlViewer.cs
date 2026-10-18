@@ -52,6 +52,7 @@ namespace QFG5Extractor.Viewers.Model
 
         // OpenTK variables
         private GLControl glControl; // Moved from above
+        private Panel viewportEmptyState;
         private List<int> currentTextureIds = new List<int>();
         private int fallbackTextureId = -1;
         private float meshScale = 1.0f; 
@@ -76,11 +77,23 @@ namespace QFG5Extractor.Viewers.Model
         private string loadedAnmName = "<None>";
         public MdlViewer()
         {
+            var swViewerTotal = System.Diagnostics.Stopwatch.StartNew();
             this.BackColor = Color.Transparent;
             viewerLogic = new OldMdlViewerLogic();
             _dbPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "model_db.json");
+            if (!File.Exists(_dbPath)) {
+                string devPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "..", "..", "model_db.json");
+                if (File.Exists(devPath)) _dbPath = Path.GetFullPath(devPath);
+            }
+            var swDb = System.Diagnostics.Stopwatch.StartNew();
             _db = new ModelDatabase(_dbPath);
+            swDb.Stop();
+            Logger.LogPerf($"MdlViewer model_db.json: {swDb.ElapsedMilliseconds} ms");
+
+            var swInitComp = System.Diagnostics.Stopwatch.StartNew();
             InitializeComponent();
+            swInitComp.Stop();
+            Logger.LogPerf($"MdlViewer InitializeComponent (with GLControl creation): {swInitComp.ElapsedMilliseconds} ms");
             
             SharedState.OnBaseDataPathChanged += (path) => {
                 string mdlDir = Path.Combine(path, "hdnw" + Path.DirectorySeparatorChar + "mdl");
@@ -120,9 +133,13 @@ namespace QFG5Extractor.Viewers.Model
 
                 if (needsRedraw && glControl != null) glControl.Invalidate();
             };
-            spinTimer.Start();
-            
+            this.VisibleChanged += (s, e) => UpdateSpinTimer();
+            this.ParentChanged += (s, e) => UpdateSpinTimer();
+            UpdateSpinTimer();
+
             this.DoubleBuffered = true;
+            swViewerTotal.Stop();
+            Logger.LogPerf($"MdlViewer constructor total: {swViewerTotal.ElapsedMilliseconds} ms");
         }
 
         private void InitializeComponent()
@@ -135,11 +152,11 @@ namespace QFG5Extractor.Viewers.Model
                 ColumnCount = 2,
                 RowCount = 2,
                 BackColor = Color.Transparent,
-                Padding = new Padding(4)
+                Padding = new Padding(8)
             };
-            mainLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 340));
+            mainLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 300));
             mainLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-            mainLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 96));
+            mainLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 118));
             mainLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
 
             // --- Header: Path Management ---
@@ -155,81 +172,120 @@ namespace QFG5Extractor.Viewers.Model
 
             // Inline path rows (TextBox themed, matching viewer style)
             TableLayoutPanel mdlRow = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 3, RowCount = 1 };
-            mdlRow.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 90));
+            mdlRow.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 82));
             mdlRow.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-            mdlRow.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 100));
+            mdlRow.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 88));
             txtMDLFolder = CreateThemedTextBox();
             txtMDLFolder.KeyDown += TxtMDLFolder_KeyDown;
             btnBrowse = new QFG5Button { Text = "Browse", Dock = DockStyle.Fill, Height = 30 };
             btnBrowse.Click += BtnBrowse_Click;
-            mdlRow.Controls.Add(new Label { Text = "MDL Path:", ForeColor = Color.White, TextAlign = ContentAlignment.MiddleLeft, Dock = DockStyle.Fill }, 0, 0);
+            mdlRow.Controls.Add(new Label { Text = "MDL Folder", ForeColor = QFG5Theme.ColorTextPrimary, Font = QFG5Theme.BodyBoldFont, TextAlign = ContentAlignment.MiddleLeft, Dock = DockStyle.Fill }, 0, 0);
             mdlRow.Controls.Add(txtMDLFolder, 1, 0);
             mdlRow.Controls.Add(btnBrowse, 2, 0);
 
             TableLayoutPanel anmRow = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 3, RowCount = 1 };
-            anmRow.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 90));
+            anmRow.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 82));
             anmRow.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-            anmRow.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 100));
+            anmRow.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 88));
             txtANMFolder = CreateThemedTextBox();
             btnBrowseANM = new QFG5Button { Text = "Browse", Dock = DockStyle.Fill, Height = 30 };
             btnBrowseANM.Click += BtnBrowseANM_Click;
-            anmRow.Controls.Add(new Label { Text = "ANM Path:", ForeColor = Color.White, TextAlign = ContentAlignment.MiddleLeft, Dock = DockStyle.Fill }, 0, 0);
+            anmRow.Controls.Add(new Label { Text = "ANM Folder", ForeColor = QFG5Theme.ColorTextPrimary, Font = QFG5Theme.BodyBoldFont, TextAlign = ContentAlignment.MiddleLeft, Dock = DockStyle.Fill }, 0, 0);
             anmRow.Controls.Add(txtANMFolder, 1, 0);
             anmRow.Controls.Add(btnBrowseANM, 2, 0);
 
             headerTable.Controls.Add(mdlRow, 0, 0);
             headerTable.Controls.Add(anmRow, 0, 1);
-            mainLayout.Controls.Add(headerTable, 0, 0);
-            mainLayout.SetColumnSpan(headerTable, 2);
+            QFG5CollapsibleSection folderSection =
+                new QFG5CollapsibleSection("MODEL & ANIMATION FOLDERS", headerTable, 118);
+            mainLayout.Controls.Add(folderSection, 0, 0);
+            mainLayout.SetColumnSpan(folderSection, 2);
 
             // --- Left Panel: Sidebar ---
-            Panel sidebar = new Panel { Dock = DockStyle.Fill, Padding = new Padding(6, 4, 6, 4), BackColor = Color.Transparent };
-
-            // Tools at bottom
-            Panel toolsPanel = CreateToolPanel("Tools", 50);
-            Panel utilPanel = new Panel { Dock = DockStyle.Fill, Padding = new Padding(0, 2, 0, 0) };
-            btnBuildIndex = new QFG5Button { Text = "Sync DB", Dock = DockStyle.Left, Width = 110, Height = 30 };
-            btnBuildIndex.Click += BtnBuildIndex_Click;
-            QFG5Button btnRunAllLog = new QFG5Button { Text = "Log All", Dock = DockStyle.Right, Width = 110, Height = 30 };
-            btnRunAllLog.Click += BtnRunAllLog_Click;
-            utilPanel.Controls.AddRange(new Control[] { btnBuildIndex, btnRunAllLog });
-            toolsPanel.Controls.Add(utilPanel);
-            toolsPanel.Dock = DockStyle.Bottom;
-
-            // Texture section
-            Panel texPanel = CreateToolPanel("Texture", 100);
-            cmbTextures = new QFG5ComboBox { Dock = DockStyle.Top };
-            cmbTextures.ComboBox.SelectedIndexChanged += (s, e) => {
-                if (glControl != null && cmbTextures.ComboBox.SelectedIndex >= 0 && lstMDLFiles.SelectedItem != null)
-                    LoadMDL(Path.Combine(txtMDLFolder.Text, ((MdlListItem)lstMDLFiles.SelectedItem).FileName));
-                if (glControl != null) glControl.Invalidate();
+            QFG5PreviewFrame sidebar = new QFG5PreviewFrame { Dock = DockStyle.Fill, Padding = new Padding(5) };
+            TableLayoutPanel sidebarLayout = new TableLayoutPanel
+            {
+                Dock = DockStyle.Fill,
+                ColumnCount = 1,
+                RowCount = 4,
+                BackColor = Color.Transparent,
+                Margin = new Padding(0)
             };
-            chkAutoMultiTex = new CheckBox {
-                Text = "Auto-link Multi-Textures",
-                ForeColor = Color.Gray,
-                Checked = true,
-                AutoSize = true,
+            sidebarLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100f));
+            sidebarLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 100f));
+            sidebarLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 132));
+            sidebarLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 112));
+            sidebarLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 68));
+
+            Panel listPanel = new Panel
+            {
+                Dock = DockStyle.Fill,
+                BackColor = QFG5Theme.ColorSurface,
+                Padding = new Padding(6),
+                Margin = new Padding(2)
+            };
+            QFG5Theme.ApplyHeaderStroke(listPanel);
+            Label listLabel = new Label
+            {
+                Text = "MODEL FILES",
                 Dock = DockStyle.Top,
-                Padding = new Padding(3, 4, 0, 4)
+                Height = 25,
+                ForeColor = QFG5Theme.ColorTextGold,
+                Font = QFG5Theme.SectionHeaderFont,
+                TextAlign = ContentAlignment.MiddleLeft
             };
-            chkAutoMultiTex.CheckedChanged += (s, e) => {
-                if (glControl != null && lstMDLFiles.SelectedItem != null) {
-                    LoadMDL(Path.Combine(txtMDLFolder.Text, ((MdlListItem)lstMDLFiles.SelectedItem).FileName));
-                    glControl.Invalidate();
-                }
+            listLabel.Paint += (s, e) => QFG5Theme.DrawHeaderStroke(e.Graphics, listLabel.ClientRectangle);
+            lstMDLFiles = new ListBox {
+                Dock = DockStyle.Fill,
+                BackColor = QFG5Theme.ColorSurfaceRecessed,
+                ForeColor = QFG5Theme.ColorTextPrimary,
+                Font = QFG5Theme.BodyFont,
+                BorderStyle = BorderStyle.None,
+                IntegralHeight = false
             };
-            texPanel.Controls.Add(chkAutoMultiTex);
-            texPanel.Controls.Add(cmbTextures);
-            texPanel.Dock = DockStyle.Bottom;
+            lstMDLFiles.SelectedIndexChanged += LstMDLFiles_SelectedIndexChanged;
+            listPanel.Controls.Add(lstMDLFiles);
+            listPanel.Controls.Add(listLabel);
 
-            // Animation section
-            Panel animPanel = CreateToolPanel("Animation", 120);
-            cmbAnimations = new QFG5ComboBox { Dock = DockStyle.Top };
+            TableLayoutPanel animPanel = new TableLayoutPanel
+            {
+                Dock = DockStyle.Fill,
+                ColumnCount = 1,
+                RowCount = 3,
+                BackColor = QFG5Theme.ColorSurface,
+                Padding = new Padding(6),
+                Margin = new Padding(2)
+            };
+            QFG5Theme.ApplyHeaderStroke(animPanel);
+            animPanel.RowStyles.Add(new RowStyle(SizeType.Absolute, 25));
+            animPanel.RowStyles.Add(new RowStyle(SizeType.Absolute, 34));
+            animPanel.RowStyles.Add(new RowStyle(SizeType.Percent, 100f));
+            animPanel.Controls.Add(new Label
+            {
+                Text = "ANIMATION",
+                Dock = DockStyle.Fill,
+                ForeColor = QFG5Theme.ColorTextGold,
+                Font = QFG5Theme.SectionHeaderFont,
+                TextAlign = ContentAlignment.MiddleLeft
+            }, 0, 0);
+            cmbAnimations = new QFG5ComboBox { Dock = DockStyle.Fill, Margin = new Padding(0, 2, 0, 2) };
             cmbAnimations.ComboBox.SelectedIndexChanged += CmbAnimations_SelectedIndexChanged;
-            Panel animPlayRow = new Panel { Dock = DockStyle.Top, Height = 34, Padding = new Padding(0, 2, 0, 2) };
-            btnPlayAnim = new QFG5Button { Text = "Play", Width = 56, Height = 28, Dock = DockStyle.Left };
+            animPanel.Controls.Add(cmbAnimations, 0, 1);
+
+            TableLayoutPanel animPlayRow = new TableLayoutPanel
+            {
+                Dock = DockStyle.Fill,
+                ColumnCount = 3,
+                RowCount = 1,
+                BackColor = Color.Transparent,
+                Margin = new Padding(0)
+            };
+            animPlayRow.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 70));
+            animPlayRow.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 58));
+            animPlayRow.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100f));
+            btnPlayAnim = new QFG5Button { Text = "Play", Dock = DockStyle.Fill, Height = 30, Margin = new Padding(0, 2, 3, 2) };
             btnPlayAnim.Click += BtnPlayAnim_Click;
-            btnAnimHalfSpeed = new QFG5Button { Text = "1×", Width = 40, Height = 28, Dock = DockStyle.Left, Margin = new Padding(4, 0, 0, 0) };
+            btnAnimHalfSpeed = new QFG5Button { Text = "1×", Dock = DockStyle.Fill, Height = 30, Margin = new Padding(2, 2, 3, 2) };
             btnAnimHalfSpeed.Click += (s, e) => {
                 animHalfSpeed = !animHalfSpeed;
                 btnAnimHalfSpeed.Text = animHalfSpeed ? "½×" : "1×";
@@ -237,46 +293,135 @@ namespace QFG5Extractor.Viewers.Model
             };
             lblAnimFrame = new Label {
                 Text = "Frame: -",
-                ForeColor = Color.LightGray,
+                ForeColor = QFG5Theme.ColorTextMuted,
                 Dock = DockStyle.Fill,
                 TextAlign = ContentAlignment.MiddleLeft,
-                Padding = new Padding(8, 0, 0, 0)
+                AutoEllipsis = true,
+                Padding = new Padding(5, 0, 0, 0)
             };
-            animPlayRow.Controls.Add(lblAnimFrame);
-            animPlayRow.Controls.Add(btnAnimHalfSpeed);
-            animPlayRow.Controls.Add(btnPlayAnim);
-            animPanel.Controls.Add(animPlayRow);
-            animPanel.Controls.Add(cmbAnimations);
-            animPanel.Dock = DockStyle.Bottom;
+            animPlayRow.Controls.Add(btnPlayAnim, 0, 0);
+            animPlayRow.Controls.Add(btnAnimHalfSpeed, 1, 0);
+            animPlayRow.Controls.Add(lblAnimFrame, 2, 0);
+            animPanel.Controls.Add(animPlayRow, 0, 2);
 
-            Label listLabel = new Label { Text = "Model Files", Dock = DockStyle.Top, Height = 22, ForeColor = Color.Gold, Font = new Font("Arial", 9, FontStyle.Bold) };
-            lstMDLFiles = new ListBox {
+            TableLayoutPanel texPanel = new TableLayoutPanel
+            {
                 Dock = DockStyle.Fill,
-                BackColor = Color.FromArgb(30, 25, 20),
-                ForeColor = Color.White,
-                BorderStyle = BorderStyle.FixedSingle
+                ColumnCount = 1,
+                RowCount = 3,
+                BackColor = QFG5Theme.ColorSurface,
+                Padding = new Padding(6),
+                Margin = new Padding(2)
             };
-            lstMDLFiles.SelectedIndexChanged += LstMDLFiles_SelectedIndexChanged;
+            QFG5Theme.ApplyHeaderStroke(texPanel);
+            texPanel.RowStyles.Add(new RowStyle(SizeType.Absolute, 25));
+            texPanel.RowStyles.Add(new RowStyle(SizeType.Absolute, 34));
+            texPanel.RowStyles.Add(new RowStyle(SizeType.Percent, 100f));
+            texPanel.Controls.Add(new Label
+            {
+                Text = "TEXTURE",
+                Dock = DockStyle.Fill,
+                ForeColor = QFG5Theme.ColorTextGold,
+                Font = QFG5Theme.SectionHeaderFont,
+                TextAlign = ContentAlignment.MiddleLeft
+            }, 0, 0);
+            cmbTextures = new QFG5ComboBox { Dock = DockStyle.Fill, Margin = new Padding(0, 2, 0, 2) };
+            cmbTextures.ComboBox.SelectedIndexChanged += (s, e) => {
+                if (glControl != null && cmbTextures.ComboBox.SelectedIndex >= 0 && lstMDLFiles.SelectedItem != null)
+                    LoadMDL(Path.Combine(txtMDLFolder.Text, ((MdlListItem)lstMDLFiles.SelectedItem).FileName));
+                if (glControl != null) glControl.Invalidate();
+            };
+            texPanel.Controls.Add(cmbTextures, 0, 1);
+            chkAutoMultiTex = new CheckBox {
+                Text = "Auto-link Multi-Textures",
+                ForeColor = QFG5Theme.ColorTextPrimary,
+                Font = QFG5Theme.CaptionFont,
+                Checked = true,
+                AutoSize = true,
+                Dock = DockStyle.Fill,
+                Padding = new Padding(2, 2, 0, 0),
+                BackColor = Color.Transparent
+            };
+            chkAutoMultiTex.CheckedChanged += (s, e) => {
+                if (glControl != null && lstMDLFiles.SelectedItem != null) {
+                    LoadMDL(Path.Combine(txtMDLFolder.Text, ((MdlListItem)lstMDLFiles.SelectedItem).FileName));
+                    glControl.Invalidate();
+                }
+            };
+            texPanel.Controls.Add(chkAutoMultiTex, 0, 2);
 
-            sidebar.Controls.Add(lstMDLFiles);
-            sidebar.Controls.Add(listLabel);
-            sidebar.Controls.Add(animPanel);
-            sidebar.Controls.Add(texPanel);
-            sidebar.Controls.Add(toolsPanel);
+            TableLayoutPanel toolsPanel = new TableLayoutPanel
+            {
+                Dock = DockStyle.Fill,
+                ColumnCount = 1,
+                RowCount = 2,
+                BackColor = QFG5Theme.ColorSurface,
+                Padding = new Padding(6, 3, 6, 4),
+                Margin = new Padding(2)
+            };
+            QFG5Theme.ApplyHeaderStroke(toolsPanel);
+            toolsPanel.RowStyles.Add(new RowStyle(SizeType.Absolute, 23));
+            toolsPanel.RowStyles.Add(new RowStyle(SizeType.Percent, 100f));
+            toolsPanel.Controls.Add(new Label
+            {
+                Text = "TOOLS",
+                Dock = DockStyle.Fill,
+                ForeColor = QFG5Theme.ColorTextGold,
+                Font = QFG5Theme.CaptionFont,
+                TextAlign = ContentAlignment.MiddleLeft
+            }, 0, 0);
+            TableLayoutPanel utilPanel = new TableLayoutPanel
+            {
+                Dock = DockStyle.Fill,
+                ColumnCount = 2,
+                RowCount = 1,
+                BackColor = Color.Transparent,
+                Margin = new Padding(0)
+            };
+            utilPanel.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50f));
+            utilPanel.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50f));
+            btnBuildIndex = new QFG5Button { Text = "Sync DB", Dock = DockStyle.Fill, Height = 30, Margin = new Padding(0, 1, 2, 1) };
+            btnBuildIndex.Click += BtnBuildIndex_Click;
+            QFG5Button btnRunAllLog = new QFG5Button { Text = "Log All", Dock = DockStyle.Fill, Height = 30, Margin = new Padding(2, 1, 0, 1) };
+            btnRunAllLog.Click += BtnRunAllLog_Click;
+            utilPanel.Controls.Add(btnBuildIndex, 0, 0);
+            utilPanel.Controls.Add(btnRunAllLog, 1, 0);
+            toolsPanel.Controls.Add(utilPanel, 0, 1);
+
+            sidebarLayout.Controls.Add(listPanel, 0, 0);
+            sidebarLayout.Controls.Add(animPanel, 0, 1);
+            sidebarLayout.Controls.Add(texPanel, 0, 2);
+            sidebarLayout.Controls.Add(toolsPanel, 0, 3);
+            sidebar.Controls.Add(sidebarLayout);
             mainLayout.Controls.Add(sidebar, 0, 1);
 
             // --- Right Panel: Viewport ---
             Panel viewportPanel = new Panel { Dock = DockStyle.Fill, Padding = new Padding(4, 4, 8, 4), BackColor = Color.Transparent };
+            TableLayoutPanel viewportLayout = new TableLayoutPanel
+            {
+                Dock = DockStyle.Fill,
+                ColumnCount = 1,
+                RowCount = 4,
+                BackColor = Color.Transparent,
+                Margin = new Padding(0)
+            };
+            viewportLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100f));
+            viewportLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 42));
+            viewportLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 40));
+            viewportLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 100f));
+            viewportLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 100));
+            viewportPanel.Controls.Add(viewportLayout);
             mainLayout.Controls.Add(viewportPanel, 1, 1);
 
             TableLayoutPanel viewHeader = new TableLayoutPanel {
                 Dock = DockStyle.Top,
-                Height = 38,
+                Height = 42,
                 ColumnCount = 2,
-                BackColor = Color.Transparent
+                BackColor = QFG5Theme.ColorSurface
             };
+            viewHeader.Paint += (s, e) => QFG5Theme.DrawHeaderStroke(e.Graphics, viewHeader.ClientRectangle);
             viewHeader.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100f));
-            viewHeader.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 280));
+            viewHeader.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 300));
 
             FlowLayoutPanel nameFlow = new FlowLayoutPanel {
                 Dock = DockStyle.Fill,
@@ -284,8 +429,8 @@ namespace QFG5Extractor.Viewers.Model
                 WrapContents = false,
                 BackColor = Color.Transparent
             };
-            lblNameTitle = new Label { Text = "Active Model:", AutoSize = true, TextAlign = ContentAlignment.MiddleLeft, ForeColor = Color.White, Padding = new Padding(0, 8, 0, 0) };
-            lblModelName = new Label { Text = "<None>", AutoSize = true, TextAlign = ContentAlignment.MiddleLeft, Font = new Font(this.Font, FontStyle.Bold), ForeColor = Color.Gold, Padding = new Padding(4, 8, 0, 0) };
+            lblNameTitle = new Label { Text = "ACTIVE MODEL", AutoSize = true, TextAlign = ContentAlignment.MiddleLeft, ForeColor = QFG5Theme.ColorTextMuted, Font = QFG5Theme.CaptionFont, Padding = new Padding(4, 12, 0, 0) };
+            lblModelName = new Label { Text = "<None>", AutoSize = true, TextAlign = ContentAlignment.MiddleLeft, Font = QFG5Theme.BodyBoldFont, ForeColor = QFG5Theme.ColorTextGold, Padding = new Padding(8, 10, 0, 0) };
             nameFlow.Controls.AddRange(new Control[] { lblNameTitle, lblModelName });
 
             FlowLayoutPanel modeFlow = new FlowLayoutPanel {
@@ -294,14 +439,14 @@ namespace QFG5Extractor.Viewers.Model
                 WrapContents = false,
                 BackColor = Color.Transparent
             };
-            btnToggleMode = new QFG5Button { Text = "Wireframe3D", Width = 120, Height = 30, Margin = new Padding(4, 2, 0, 0) };
+            btnToggleMode = new QFG5Button { Text = "Wireframe3D", Width = 108, Height = 30, Margin = new Padding(4, 2, 0, 0) };
             btnToggleMode.Click += BtnToggleMode_Click;
-            QFG5Button btnRecenter = new QFG5Button { Text = "Recenter", Width = 100, Height = 30, Margin = new Padding(4, 2, 0, 0) };
+            QFG5Button btnRecenter = new QFG5Button { Text = "Recenter", Width = 82, Height = 30, Margin = new Padding(4, 2, 0, 0) };
             btnRecenter.Click += (s, e) => {
                 panX = 0; panY = 0; rotX = 0; rotY = 0; zoomLevel = 1.0f;
                 glControl.Invalidate();
             };
-            Label lblMode = new Label { Text = "Mode:", AutoSize = true, TextAlign = ContentAlignment.MiddleLeft, ForeColor = Color.White, Padding = new Padding(0, 8, 0, 0) };
+            Label lblMode = new Label { Text = "VIEW MODE", AutoSize = true, TextAlign = ContentAlignment.MiddleLeft, ForeColor = QFG5Theme.ColorTextMuted, Font = QFG5Theme.CaptionFont, Padding = new Padding(0, 12, 0, 0) };
             modeFlow.Controls.Add(btnToggleMode);
             modeFlow.Controls.Add(lblMode);
             modeFlow.Controls.Add(btnRecenter);
@@ -309,13 +454,19 @@ namespace QFG5Extractor.Viewers.Model
             viewHeader.Controls.Add(nameFlow, 0, 0);
             viewHeader.Controls.Add(modeFlow, 1, 0);
 
-            Panel glContainer = new Panel { Dock = DockStyle.Fill, Padding = new Padding(0, 4, 0, 4) };
+            Panel glContainer = new Panel {
+                Dock = DockStyle.Fill,
+                Padding = new Padding(3),
+                BackColor = QFG5Theme.ColorSurfaceRecessed
+            };
+            glContainer.Paint += (s, e) => QFG5Theme.DrawRecessedFrame(e.Graphics, glContainer.ClientRectangle);
             glControl = new GLControl(new OpenTK.Graphics.GraphicsMode(32, 24, 0, 8));
             glControl.Dock = DockStyle.Fill;
             glControl.Paint += GlControl_Paint;
             glControl.Resize += GlControl_Resize;
             glControl.Load += (s, e) => {
-                GL.ClearColor(Color.Black);
+                var swGl = System.Diagnostics.Stopwatch.StartNew();
+                GL.ClearColor(Color.FromArgb(22, 24, 21));
                 GL.Enable(EnableCap.DepthTest);
                 GL.Enable(EnableCap.CullFace);
                 GL.CullFace(CullFaceMode.Back);
@@ -328,6 +479,8 @@ namespace QFG5Extractor.Viewers.Model
                 GL.Light(LightName.Light0, LightParameter.Specular, new float[] { 0.2f, 0.2f, 0.2f, 1.0f });
                 GL.Enable(EnableCap.Light0);
                 SetupViewport();
+                swGl.Stop();
+                Logger.LogPerf($"OpenGL context initialization (glControl.Load): {swGl.ElapsedMilliseconds} ms");
             };
 
             this.VisibleChanged += (s, e) => {
@@ -379,17 +532,19 @@ namespace QFG5Extractor.Viewers.Model
             glControl.MouseWheel += GlControl_MouseWheel;
 
             FlowLayoutPanel overlayToolbar = new FlowLayoutPanel {
-                Width = 42,
-                Dock = DockStyle.Right,
-                BackColor = Color.FromArgb(120, 20, 20, 20),
-                FlowDirection = FlowDirection.TopDown,
-                Padding = new Padding(3),
+                Dock = DockStyle.Top,
+                Height = 40,
+                BackColor = QFG5Theme.ColorSurface,
+                FlowDirection = FlowDirection.LeftToRight,
+                WrapContents = false,
+                Padding = new Padding(4, 2, 4, 2),
                 Margin = new Padding(0)
             };
+            overlayToolbar.Paint += (s, e) => QFG5Theme.DrawHeaderStroke(e.Graphics, overlayToolbar.ClientRectangle);
 
             ToolTip tt = new ToolTip();
 
-            btnResetRotation = new QFG5Button { Text = "R", Width = 34, Height = 34, Margin = new Padding(0, 0, 0, 4) };
+            btnResetRotation = new QFG5Button { Text = "Reset", Width = 54, Height = 30, Margin = new Padding(0, 0, 4, 0) };
             tt.SetToolTip(btnResetRotation, "Reset View (Home)");
             btnResetRotation.Click += (s, e) => {
                 rotX = 0; rotY = 0; rotOffset90X = 270; rotOffset90Y = 0; uvRotation = 0;
@@ -398,72 +553,102 @@ namespace QFG5Extractor.Viewers.Model
                 if (glControl != null) glControl.Invalidate();
             };
 
-            btnRotate90 = new QFG5Button { Text = "X", Width = 34, Height = 34, Margin = new Padding(0, 0, 0, 4) };
+            btnRotate90 = new QFG5Button { Text = "Rotate X", Width = 64, Height = 30, Margin = new Padding(0, 0, 4, 0) };
             tt.SetToolTip(btnRotate90, "Rotate 90° (X Axis)");
             btnRotate90.Click += (s, e) => { rotOffset90X = (rotOffset90X + 90) % 360; if (glControl != null) glControl.Invalidate(); };
 
-            btnRotateAxis = new QFG5Button { Text = "Y", Width = 34, Height = 34, Margin = new Padding(0, 0, 0, 4) };
+            btnRotateAxis = new QFG5Button { Text = "Rotate Y", Width = 64, Height = 30, Margin = new Padding(0, 0, 4, 0) };
             tt.SetToolTip(btnRotateAxis, "Rotate 90° (Y Axis)");
             btnRotateAxis.Click += (s, e) => { rotOffset90Y = (rotOffset90Y + 90) % 360; if (glControl != null) glControl.Invalidate(); };
 
-            QFG5Button btnToggleSpinShort = new QFG5Button { Text = "S", Width = 34, Height = 34, Margin = new Padding(0, 0, 0, 4) };
+            QFG5Button btnToggleSpinShort = new QFG5Button { Text = "Auto Spin", Width = 68, Height = 30, Margin = new Padding(0, 0, 4, 0) };
             tt.SetToolTip(btnToggleSpinShort, "Toggle Auto-Spin");
-            btnToggleSpinShort.Click += (s, e) => { isSpinning = !isSpinning; };
+            btnToggleSpinShort.Click += (s, e) => { isSpinning = !isSpinning; UpdateSpinTimer(); };
 
-            QFG5Button btnExplodeShort = new QFG5Button { Text = "E", Width = 34, Height = 34, Margin = new Padding(0, 0, 0, 4) };
+            QFG5Button btnExplodeShort = new QFG5Button { Text = "Explode", Width = 62, Height = 30, Margin = new Padding(0, 0, 4, 0) };
             tt.SetToolTip(btnExplodeShort, "Toggle Exploded View");
             btnExplodeShort.Click += (s, e) => { isExploded = !isExploded; if (glControl != null) glControl.Invalidate(); };
 
-            QFG5Button btnToggleAxis = new QFG5Button { Text = "A", Width = 34, Height = 34, Margin = new Padding(0, 0, 0, 4) };
+            QFG5Button btnToggleAxis = new QFG5Button { Text = "Axis", Width = 42, Height = 30, Margin = new Padding(0, 0, 4, 0) };
             tt.SetToolTip(btnToggleAxis, "Toggle Coordinate Axis");
             btnToggleAxis.Click += (s, e) => { showAxis = !showAxis; if (glControl != null) glControl.Invalidate(); };
 
-            QFG5Button btnScreenshot = new QFG5Button { Text = "📷", Width = 34, Height = 34, Margin = new Padding(0, 0, 0, 4) };
-            tt.SetToolTip(btnScreenshot, "Save Screenshot (PNG)");
+            QFG5Button btnScreenshot = new QFG5Button { Text = "Shot", Width = 44, Height = 30, Margin = new Padding(0, 0, 4, 0) };
+            tt.SetToolTip(btnScreenshot, "Save Viewport Screenshot (PNG)");
             btnScreenshot.Click += (s, e) => SaveScreenshot();
 
-            QFG5Button btnExportGlbOverlay = new QFG5Button { Text = "GLB", Width = 34, Height = 34, Margin = new Padding(0, 0, 0, 4) };
-            tt.SetToolTip(btnExportGlbOverlay, "Export static GLB (no animations)");
-            btnExportGlbOverlay.Click += (s, e) => ExportToGlb();
+            overlayToolbar.Controls.AddRange(new Control[] { btnResetRotation, btnRotate90, btnRotateAxis, btnToggleSpinShort, btnExplodeShort, btnToggleAxis, btnScreenshot });
+            foreach (Control control in overlayToolbar.Controls)
+                control.Font = QFG5Theme.CaptionFont;
 
-            overlayToolbar.Controls.AddRange(new Control[] { btnResetRotation, btnRotate90, btnRotateAxis, btnToggleSpinShort, btnExplodeShort, btnToggleAxis, btnScreenshot, btnExportGlbOverlay });
-
-            glContainer.Controls.Add(overlayToolbar);
-            overlayToolbar.BringToFront();
             glContainer.Controls.Add(glControl);
+            viewportEmptyState = new Panel {
+                Dock = DockStyle.Fill,
+                BackColor = Color.FromArgb(235, 22, 24, 21)
+            };
+            viewportEmptyState.Controls.Add(new Label {
+                Text = "NO MODEL LOADED\r\nSelect a model file from the list to preview it.",
+                Dock = DockStyle.Fill,
+                ForeColor = QFG5Theme.ColorTextMuted,
+                Font = QFG5Theme.BodyFont,
+                TextAlign = ContentAlignment.MiddleCenter,
+                BackColor = Color.Transparent
+            });
+            glContainer.Controls.Add(viewportEmptyState);
+            viewportEmptyState.BringToFront();
 
-            Panel footer = new Panel { Dock = DockStyle.Bottom, Height = 48, BackColor = Color.Transparent };
+            TableLayoutPanel footer = new TableLayoutPanel {
+                Dock = DockStyle.Bottom,
+                Height = 100,
+                ColumnCount = 1,
+                RowCount = 2,
+                BackColor = Color.Transparent,
+                Margin = new Padding(0),
+                Padding = new Padding(0)
+            };
+            footer.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100f));
+            footer.RowStyles.Add(new RowStyle(SizeType.Absolute, 28));
+            footer.RowStyles.Add(new RowStyle(SizeType.Absolute, 72));
             Label lblHint = new Label {
                 Text = "Drag to orbit · Wheel to zoom · Middle-drag to pan",
-                Dock = DockStyle.Left,
-                Width = 320,
-                ForeColor = Color.Gray,
-                TextAlign = ContentAlignment.MiddleLeft
+                Dock = DockStyle.Fill,
+                ForeColor = QFG5Theme.ColorTextMuted,
+                TextAlign = ContentAlignment.MiddleLeft,
+                AutoEllipsis = true
             };
-            FlowLayoutPanel rightFlow = new FlowLayoutPanel {
-                Dock = DockStyle.Right,
-                AutoSize = true,
-                FlowDirection = FlowDirection.RightToLeft,
-                WrapContents = false,
-                Padding = new Padding(0, 6, 0, 0)
+            TableLayoutPanel actionGrid = new TableLayoutPanel {
+                Dock = DockStyle.Fill,
+                ColumnCount = 2,
+                RowCount = 2,
+                BackColor = Color.Transparent,
+                Margin = new Padding(0),
+                Padding = new Padding(0)
             };
+            actionGrid.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50f));
+            actionGrid.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50f));
+            actionGrid.RowStyles.Add(new RowStyle(SizeType.Percent, 50f));
+            actionGrid.RowStyles.Add(new RowStyle(SizeType.Percent, 50f));
 
-            btnLog = new QFG5Button { Text = "Log", Width = 60, Height = 32, Margin = new Padding(4, 0, 0, 0) };
+            btnLog = new QFG5Button { Text = "Log", Height = 32, Dock = DockStyle.Fill, Margin = new Padding(4, 2, 2, 2) };
             btnLog.Click += (s, e) => Logger.OpenLogFile();
-            btnExport = new QFG5Button { Text = "Export PNG", Width = 110, Height = 32, Margin = new Padding(4, 0, 0, 0) };
+            btnExport = new QFG5Button { Text = "Export PNG", Height = 32, Dock = DockStyle.Fill, Margin = new Padding(2, 2, 2, 2) };
             btnExport.Click += BtnExport_Click;
-            QFG5Button btnExportGlb = new QFG5Button { Text = "Export GLB", Width = 110, Height = 32, Margin = new Padding(4, 0, 0, 0) };
+            QFG5Button btnExportGlb = new QFG5Button { Text = "Export GLB", Height = 32, Dock = DockStyle.Fill, Margin = new Padding(4, 2, 2, 2) };
             btnExportGlb.Click += (s, e) => ExportToGlb();
-            QFG5Button btnEditTexture = new QFG5Button { Text = "Edit Texture", Width = 120, Height = 32, Margin = new Padding(4, 0, 0, 0) };
+            QFG5Button btnEditTexture = new QFG5Button { Text = "Edit Texture", Height = 32, Dock = DockStyle.Fill, Margin = new Padding(2, 2, 2, 2) };
             btnEditTexture.Click += BtnEditTexture_Click;
 
-            rightFlow.Controls.AddRange(new Control[] { btnLog, btnExport, btnExportGlb, btnEditTexture });
-            footer.Controls.Add(lblHint);
-            footer.Controls.Add(rightFlow);
+            actionGrid.Controls.Add(btnLog, 0, 0);
+            actionGrid.Controls.Add(btnExport, 1, 0);
+            actionGrid.Controls.Add(btnExportGlb, 0, 1);
+            actionGrid.Controls.Add(btnEditTexture, 1, 1);
+            footer.Controls.Add(lblHint, 0, 0);
+            footer.Controls.Add(actionGrid, 0, 1);
 
-            viewportPanel.Controls.Add(glContainer);
-            viewportPanel.Controls.Add(viewHeader);
-            viewportPanel.Controls.Add(footer);
+            viewportLayout.Controls.Add(viewHeader, 0, 0);
+            viewportLayout.Controls.Add(overlayToolbar, 0, 1);
+            viewportLayout.Controls.Add(glContainer, 0, 2);
+            viewportLayout.Controls.Add(footer, 0, 3);
 
             this.Controls.Add(mainLayout);
         }
@@ -472,9 +657,9 @@ namespace QFG5Extractor.Viewers.Model
             return new TextBox { 
                 Dock = DockStyle.Fill, 
                 BorderStyle = BorderStyle.FixedSingle, 
-                BackColor = Color.FromArgb(45, 30, 25), 
-                ForeColor = Color.White, 
-                Font = new Font("Arial", 9, FontStyle.Regular),
+                BackColor = QFG5Theme.ColorSurfaceRecessed,
+                ForeColor = QFG5Theme.ColorTextPrimary,
+                Font = QFG5Theme.BodyFont,
                 Margin = new Padding(0, 3, 5, 3),
                 Height = 30
             };
@@ -506,9 +691,33 @@ namespace QFG5Extractor.Viewers.Model
             if (currentMode == RenderMode.Textured3D) currentMode = RenderMode.Wireframe3D;
             else if (currentMode == RenderMode.Wireframe3D) currentMode = RenderMode.Texture2D;
             else currentMode = RenderMode.Textured3D;
-            
+
             btnToggleMode.Text = currentMode.ToString();
+            UpdateSpinTimer();
             if(glControl != null) glControl.Invalidate();
+        }
+
+        private void UpdateSpinTimer()
+        {
+            if (spinTimer == null) return;
+
+            bool shouldRun = !IsDisposed && Visible && FindForm() != null &&
+                (isAnimPlaying || (isSpinning && currentMode != RenderMode.Texture2D));
+            if (shouldRun && !spinTimer.Enabled)
+                spinTimer.Start();
+            else if (!shouldRun && spinTimer.Enabled)
+                spinTimer.Stop();
+        }
+
+        protected override void Dispose(bool disposing)
+        {
+            if (disposing && spinTimer != null)
+            {
+                spinTimer.Stop();
+                spinTimer.Dispose();
+                spinTimer = null;
+            }
+            base.Dispose(disposing);
         }
 
         private void LoadFilesInFolder(string folderPath)
@@ -612,6 +821,7 @@ namespace QFG5Extractor.Viewers.Model
             if (lstMDLFiles.SelectedItem is MdlListItem item)
             {
                 currentMeshes = null;
+                viewportEmptyState.Visible = true;
                 StopAnimPlayback();
                 ClearLoadedAnimation();
                 cmbAnimations.ComboBox.Items.Clear();
@@ -804,6 +1014,7 @@ namespace QFG5Extractor.Viewers.Model
                     ClearLoadedAnimation();
                 }
 
+                viewportEmptyState.Visible = currentMeshes == null || currentMeshes.Count == 0;
                 btnExport.Enabled = true;
 
                 // Adjust the height of the control if the image is really tall
@@ -822,6 +1033,7 @@ namespace QFG5Extractor.Viewers.Model
         {
             lblModelName.Text = "<None>";
             currentMeshes = null;
+            viewportEmptyState.Visible = true;
             StopAnimPlayback();
             ClearLoadedAnimation();
             
@@ -936,8 +1148,13 @@ namespace QFG5Extractor.Viewers.Model
             SetupViewport();
         }
 
+        private bool _firstGlPaintLogged = false;
         private void GlControl_Paint(object sender, PaintEventArgs e)
         {
+            if (!_firstGlPaintLogged) {
+                _firstGlPaintLogged = true;
+                Logger.LogPerf($"First GL paint: {Logger.StartupWatch.ElapsedMilliseconds} ms from start");
+            }
             if (glControl == null) return;
             if (!glControl.Context.IsCurrent) glControl.MakeCurrent();
             // Render!
@@ -1307,6 +1524,7 @@ namespace QFG5Extractor.Viewers.Model
             isAnimPlaying = !isAnimPlaying;
             if (btnPlayAnim != null)
                 btnPlayAnim.Text = isAnimPlaying ? "Pause" : "Play";
+            UpdateSpinTimer();
         }
 
         private void StopAnimPlayback()
@@ -1314,6 +1532,7 @@ namespace QFG5Extractor.Viewers.Model
             isAnimPlaying = false;
             animTickAccumulator = 0;
             if (btnPlayAnim != null) btnPlayAnim.Text = "Play";
+            UpdateSpinTimer();
         }
 
         private void ClearLoadedAnimation()
