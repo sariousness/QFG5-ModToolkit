@@ -155,45 +155,53 @@ namespace QFG5Extractor.Core
             swTab.Stop();
             Logger.LogStartup($"Tab TextureEditorTab: END {swTab.ElapsedMilliseconds} ms");
 
+            Logger.LogStartup("Save screen FlagsTab: START");
+            swTab.Restart();
+            flagsTab = new FlagsTab(saveSession);
+            swTab.Stop();
+            Logger.LogStartup($"Save screen FlagsTab: END {swTab.ElapsedMilliseconds} ms");
+
             Logger.LogStartup("Tab SaveTab: START");
             swTab.Restart();
             saveTab = new SaveTab(saveSession);
+            saveTab.AttachFlagsScreen(flagsTab);
             pages[7] = saveTab;
             swTab.Stop();
             Logger.LogStartup($"Tab SaveTab: END {swTab.ElapsedMilliseconds} ms");
 
-            Logger.LogStartup("Tab FlagsTab: START");
-            swTab.Restart();
-            flagsTab = new FlagsTab(saveSession);
-            pages[8] = flagsTab;
-            swTab.Stop();
-            Logger.LogStartup($"Tab FlagsTab: END {swTab.ElapsedMilliseconds} ms");
-
             Logger.LogStartup("Tab SettingsTab: START");
             swTab.Restart();
-            pages[9] = new SettingsTab();
+            pages[8] = new SettingsTab();
             swTab.Stop();
             Logger.LogStartup($"Tab SettingsTab: END {swTab.ElapsedMilliseconds} ms");
+
+            Logger.LogStartup("Tab RoomStudioTab: START");
+            swTab.Restart();
+            pages[9] = new RoomStudioTab();
+            swTab.Stop();
+            Logger.LogStartup($"Tab RoomStudioTab: END {swTab.ElapsedMilliseconds} ms");
 
             // Control & Memory snapshot after tabs
             int totalTabCtrls = 0, pbTabCtrls = 0, pnlTabCtrls = 0, btnTabCtrls = 0, dgvTabCtrls = 0;
             foreach (var tab in pages) Logger.CountControls(tab, ref totalTabCtrls, ref pbTabCtrls, ref pnlTabCtrls, ref btnTabCtrls, ref dgvTabCtrls);
-            Logger.LogResource($"Controls across all 10 tabs: {totalTabCtrls} (PictureBoxes: {pbTabCtrls}, Panels: {pnlTabCtrls}, Buttons: {btnTabCtrls}, Grids: {dgvTabCtrls})");
+            Logger.LogResource($"Controls across all {pages.Length} tabs: {totalTabCtrls} (PictureBoxes: {pbTabCtrls}, Panels: {pnlTabCtrls}, Buttons: {btnTabCtrls}, Grids: {dgvTabCtrls})");
             Logger.LogResource($"Memory after Tabs: {Logger.GetMemorySnapshot()}");
 
             string[] pageNames = new string[] {
-                "SPK Archive", "MDL Model", "Pano Image", "Message", "GRA Sprite",
-                "3D Viewer", "Texture Edit", "Save Editor", "Flags (Beta)", "Settings"
+                "SPK Archive", "MDL Model", "Pano Editor", "Message", "GRA Sprite",
+                "3D Viewer", "Texture Edit", "Save Editor", "Settings",
+                "Rooms / Studio"
             };
             string[] navigationNames = new string[] {
-                "SPK Archive", "MDL Model", "Pano Image", "Message (Beta)", "GRA Sprite",
-                "3D Viewer", "Texture Edit (Beta)", "Save Editor", "Flags (Beta)", "Settings"
+                "SPK Archive", "MDL Model", "Pano Editor", "Message (Beta)", "GRA Sprite",
+                "3D Viewer", "Texture Edit (Beta)", "Save Editor", "Settings",
+                "Rooms / Studio"
             };
 
             string[] iconFiles = new string[] {
                 "spk_900002_f001.png", "mdl_900003_f001.png", "pano_900017_f001.png", "message_900004_f001.png",
                 "gra_900001_f001.png", "model_900007_f001.png", "texedit_900005.png", "save_900016_f001.png",
-                "flag_900000_f001.png", "settings_900014_f001.png"
+                "settings_900014_f001.png", "pano_900017_f001.png"
             };
 
             QFG5TableLayoutPanel tabHeaders = new QFG5TableLayoutPanel {
@@ -226,9 +234,7 @@ namespace QFG5Extractor.Core
             };
             tabBody.Paint += (s, e) => QFG5Theme.DrawHeaderStroke(e.Graphics, tabBody.ClientRectangle);
 
-            saveTab.SaveLoadRequested += (path) => CoordinateSaveLoad(path, saveSession, saveTab, flagsTab);
-            flagsTab.SaveLoadRequested += (path) => CoordinateSaveLoad(path, saveSession, saveTab, flagsTab);
-            flagsTab.SaveRequested += () => CoordinateFlagsSave(saveTab, flagsTab);
+            saveTab.SaveLoadRequested += (path) => CoordinateSaveLoad(path, saveSession, saveTab);
 
             Action<int> showTab = (index) => {
                 if (index < 0 || index >= pages.Length) return;
@@ -241,18 +247,39 @@ namespace QFG5Extractor.Core
                     tabButtons[t].Selected = (t == index);
                 }
                 activeTabIndex = index;
+                if (index == 1)
+                    ((ModelTab)pages[index]).AutoLoad();
+                else if (index == 2)
+                    ((PanoTab)pages[index]).AutoLoad();
+                else if (index == 3)
+                    ((MsgTab)pages[index]).AutoLoad();
+                else if (index == 9) {
+                    ((PanoTab)pages[2]).AutoLoad();
+                    ((RoomStudioTab)pages[index]).AutoLoad();
+                }
             };
 
             bool navigationCollapsed = false;
             QFG5Button btnMenuToggle = new QFG5Button
             {
-                Text = "◀",
+                Text = string.Empty,
                 Dock = DockStyle.Fill,
                 Margin = new Padding(3, 3, 3, 5),
                 Font = QFG5Theme.ButtonFont,
                 ForeColor = QFG5Theme.ColorTextDark,
                 Cursor = Cursors.Hand,
                 AccessibleName = "Collapse navigation"
+            };
+            btnMenuToggle.Paint += (s, e) =>
+            {
+                int direction = navigationCollapsed ? 1 : -1;
+                int centerX = btnMenuToggle.ClientSize.Width / 2;
+                int centerY = btnMenuToggle.ClientSize.Height / 2;
+                Point[] arrow = direction < 0
+                    ? new[] { new Point(centerX + 4, centerY - 7), new Point(centerX - 4, centerY), new Point(centerX + 4, centerY + 7) }
+                    : new[] { new Point(centerX - 4, centerY - 7), new Point(centerX + 4, centerY), new Point(centerX - 4, centerY + 7) };
+                using (SolidBrush brush = new SolidBrush(QFG5Theme.ColorTextDark))
+                    e.Graphics.FillPolygon(brush, arrow);
             };
             toolTips.SetToolTip(btnMenuToggle, "Collapse navigation menu");
             btnMenuToggle.Click += (s, e) => {
@@ -261,7 +288,6 @@ namespace QFG5Extractor.Core
                 tabHeaders.Width = navigationWidth;
                 tabBody.Left = tabHeaders.Left + navigationWidth + 12;
                 tabBody.Width = this.ClientSize.Width - tabBody.Left - 12;
-                btnMenuToggle.Text = navigationCollapsed ? "▶" : "◀";
                 btnMenuToggle.AccessibleName = navigationCollapsed ? "Expand navigation" : "Collapse navigation";
                 toolTips.SetToolTip(btnMenuToggle, navigationCollapsed ? "Expand navigation menu" : "Collapse navigation menu");
                 for (int i = 0; i < tabButtons.Count; i++)
@@ -315,7 +341,7 @@ namespace QFG5Extractor.Core
             Controls.Add(tabHeaders);
             Controls.Add(tabBody);
 
-            // Texture editor still requests index 6; Settings remains last (9).
+            // Texture editor still requests index 6; Settings remains index 8.
             SharedState.OnSwitchTabRequested += (idx) => {
                 if (idx < 0 || idx >= pages.Length) return;
                 showTab(idx);
@@ -375,7 +401,7 @@ namespace QFG5Extractor.Core
             }
         }
 
-        private void CoordinateSaveLoad(string path, SaveSession session, SaveTab saveTab, FlagsTab flagsTab)
+        private void CoordinateSaveLoad(string path, SaveSession session, SaveTab saveTab)
         {
             if (!saveTab.CommitPendingEdits())
             {
@@ -413,7 +439,6 @@ namespace QFG5Extractor.Core
                 if (loaded)
                 {
                     saveTab.RefreshFromSession();
-                    flagsTab.RefreshFromSession();
                 }
                 else
                 {
@@ -426,11 +451,6 @@ namespace QFG5Extractor.Core
                 MessageBox.Show(this, "Could not load save file: " + ex.Message,
                     "Load Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
             }
-        }
-
-        private void CoordinateFlagsSave(SaveTab saveTab, FlagsTab flagsTab)
-        {
-            flagsTab.SaveActiveSession();
         }
 
         private void CenterLogo(Panel logoBar)

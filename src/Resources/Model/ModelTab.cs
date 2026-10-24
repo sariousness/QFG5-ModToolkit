@@ -1,6 +1,7 @@
 using QFG5Extractor.Core;
 using QFG5Extractor.Core.UI;
 using QFG5Extractor.Resources.Model;
+using QFG5Extractor.Storage.SPK;
 using System;
 using System.Collections.Generic;
 using System.Drawing;
@@ -12,36 +13,25 @@ namespace QFG5Extractor.Resources.Model
     public class ModelTab : UserControl
     {
         private QFG5ComboBox operationComboBox;
-        private QFG5PathField inputFolderTextBox;
-        private QFG5PathField outputFolderTextBox;
         private QFG5Button runButton;
         private Label statusLabel;
         private QFG5ProgressBar progressBar;
         private Label currentFileLabel;
         private Label lblFileCount;
         private ListBox convertedListBox;
+        private ListView thumbnailListView;
+        private ImageList thumbnailImages;
+        private Label thumbnailEmptyLabel;
+        private Button listViewButton;
+        private Button thumbnailViewButton;
         private PictureBox previewPictureBox;
+        private bool syncingViews;
 
         public ModelTab()
         {
             Dock = DockStyle.Fill;
             this.BackColor = Color.Transparent;
             InitializeComponent();
-
-            SharedState.OnBaseDataPathChanged += UpdatePaths;
-            if (!string.IsNullOrEmpty(SharedState.BaseDataPath))
-            {
-                UpdatePaths(SharedState.BaseDataPath);
-            }
-            SharedState.OnExtractionPathChanged += (p) => { outputFolderTextBox.Text = p; };
-            if (!string.IsNullOrEmpty(SharedState.ExtractionPath)) outputFolderTextBox.Text = SharedState.ExtractionPath;
-        }
-
-        private void UpdatePaths(string path)
-        {
-            string mdlDir = Path.Combine(path, "hdnw" + Path.DirectorySeparatorChar + "mdl");
-            if (!Directory.Exists(mdlDir)) mdlDir = Path.Combine(path, "hdnw" + Path.DirectorySeparatorChar + "MDL");
-            if (Directory.Exists(mdlDir)) inputFolderTextBox.Text = mdlDir;
         }
 
         private void InitializeComponent()
@@ -56,17 +46,17 @@ namespace QFG5Extractor.Resources.Model
                 BackColor = QFG5Theme.ColorBgDark,
                 Padding = new Padding(QFG5Layout.ContentPadding)
             };
-            mainLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 166)); // Collapsible paths and operation
+            mainLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 54)); // Operation selector
             mainLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 100f)); // Center: Content split (list + preview)
             mainLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 56));  // Bottom: 2-row footer (progress + status)
 
-            // --- Top Section: 3 Symmetric Path & Operation Rows ---
+            // --- Top Section: Model operation row ---
             QFG5TableLayoutPanel topTable = new QFG5TableLayoutPanel
             {
                 Dock = DockStyle.Fill,
                 ColumnCount = 3,
-                RowCount = 3,
-                Margin = new Padding(0, 0, 0, 8),
+                RowCount = 1,
+                Margin = new Padding(0),
                 Padding = new Padding(6, 4, 6, 4),
                 BackColor = QFG5Theme.ColorSurface
             };
@@ -74,63 +64,9 @@ namespace QFG5Extractor.Resources.Model
             topTable.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100f));                    // Stretch
             topTable.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 95));                    // Action button width (95px)
 
-            topTable.RowStyles.Add(new RowStyle(SizeType.Absolute, 36)); // Row 0: Input Path
-            topTable.RowStyles.Add(new RowStyle(SizeType.Absolute, 36)); // Row 1: Output Path
-            topTable.RowStyles.Add(new RowStyle(SizeType.Absolute, 36)); // Row 2: Operation + Run
+            topTable.RowStyles.Add(new RowStyle(SizeType.Absolute, 36));
 
-            // Row 0: Input Path
-            Label lblInput = new Label
-            {
-                Text = "Input Path:",
-                ForeColor = QFG5Theme.ColorTextPrimary,
-                Font = QFG5Theme.BodyBoldFont,
-                Dock = DockStyle.Fill,
-                TextAlign = ContentAlignment.MiddleLeft
-            };
-            inputFolderTextBox = new QFG5PathField { Dock = DockStyle.Fill, Height = 30, Margin = new Padding(0, 3, 4, 3), TabIndex = 0, AccessibleName = "Input Path" };
-            toolTip.SetToolTip(inputFolderTextBox, "Folder containing source Quest for Glory V MDL models, BMP textures, or HAK meshes");
-
-            QFG5Button btnBrowseIn = new QFG5Button { Text = "Browse", Dock = DockStyle.Fill, Height = 30, Margin = new Padding(0, 3, 0, 3), TabIndex = 1 };
-            btnBrowseIn.Click += (s, e) =>
-            {
-                using (var fbd = new FolderBrowserDialog())
-                {
-                    if (fbd.ShowDialog() == DialogResult.OK) inputFolderTextBox.Text = fbd.SelectedPath;
-                }
-            };
-            toolTip.SetToolTip(btnBrowseIn, "Browse for input directory containing MDL, BMP, or HAK files");
-
-            topTable.Controls.Add(lblInput, 0, 0);
-            topTable.Controls.Add(inputFolderTextBox, 1, 0);
-            topTable.Controls.Add(btnBrowseIn, 2, 0);
-
-            // Row 1: Output Path
-            Label lblOutput = new Label
-            {
-                Text = "Output Path:",
-                ForeColor = QFG5Theme.ColorTextPrimary,
-                Font = QFG5Theme.BodyBoldFont,
-                Dock = DockStyle.Fill,
-                TextAlign = ContentAlignment.MiddleLeft
-            };
-            outputFolderTextBox = new QFG5PathField { Dock = DockStyle.Fill, Height = 30, Margin = new Padding(0, 3, 4, 3), TabIndex = 2, AccessibleName = "Output Path" };
-            toolTip.SetToolTip(outputFolderTextBox, "Destination folder for converted or extracted files");
-
-            QFG5Button btnBrowseOut = new QFG5Button { Text = "Browse", Dock = DockStyle.Fill, Height = 30, Margin = new Padding(0, 3, 0, 3), TabIndex = 3 };
-            btnBrowseOut.Click += (s, e) =>
-            {
-                using (var fbd = new FolderBrowserDialog())
-                {
-                    if (fbd.ShowDialog() == DialogResult.OK) outputFolderTextBox.Text = fbd.SelectedPath;
-                }
-            };
-            toolTip.SetToolTip(btnBrowseOut, "Browse for destination folder to receive converted files");
-
-            topTable.Controls.Add(lblOutput, 0, 1);
-            topTable.Controls.Add(outputFolderTextBox, 1, 1);
-            topTable.Controls.Add(btnBrowseOut, 2, 1);
-
-            // Row 2: Operation + RUN
+            // Operation + RUN
             Label lblOperation = new Label
             {
                 Text = "Operation:",
@@ -139,7 +75,7 @@ namespace QFG5Extractor.Resources.Model
                 Dock = DockStyle.Fill,
                 TextAlign = ContentAlignment.MiddleLeft
             };
-            operationComboBox = new QFG5ComboBox { Dock = DockStyle.Fill, Height = 32, Margin = new Padding(0, 2, 4, 2), TabIndex = 4 };
+            operationComboBox = new QFG5ComboBox { Dock = DockStyle.Fill, Height = 32, Margin = new Padding(0, 2, 4, 2), TabIndex = 0 };
             operationComboBox.ComboBox.Items.AddRange(new object[] {
                 "Export BMP (MDL -> BMP)",
                 "Import BMP (BMP -> MDL)",
@@ -168,15 +104,15 @@ namespace QFG5Extractor.Resources.Model
                     }
                 }
             };
-            toolTip.SetToolTip(operationComboBox, "Select batch conversion operation for models, textures, or meshes");
+            toolTip.SetToolTip(operationComboBox, "Select operation. Source and destination folders are derived from the DATA and Mods folders in Settings.");
 
-            runButton = new QFG5Button { Text = "RUN", Dock = DockStyle.Fill, Height = 30, Margin = new Padding(0, 3, 0, 3), TabIndex = 5 };
+            runButton = new QFG5Button { Text = "RUN", Dock = DockStyle.Fill, Height = 30, Margin = new Padding(0, 3, 0, 3), TabIndex = 1 };
             runButton.Click += RunButton_Click;
-            toolTip.SetToolTip(runButton, "Execute the selected batch operation on all matching files in the input folder");
+            toolTip.SetToolTip(runButton, "Run the selected operation using the configured DATA and Mods folders");
 
-            topTable.Controls.Add(lblOperation, 0, 2);
-            topTable.Controls.Add(operationComboBox, 1, 2);
-            topTable.Controls.Add(runButton, 2, 2);
+            topTable.Controls.Add(lblOperation, 0, 0);
+            topTable.Controls.Add(operationComboBox, 1, 0);
+            topTable.Controls.Add(runButton, 2, 0);
 
             // --- Center Section: Split View (Converted Files List + Texture Preview) ---
             SplitContainer split = new SplitContainer
@@ -205,6 +141,38 @@ namespace QFG5Extractor.Resources.Model
             };
             QFG5Theme.ApplyHeaderStroke(lblListHeader);
 
+            FlowLayoutPanel viewToolbar = new FlowLayoutPanel
+            {
+                Dock = DockStyle.Top,
+                Height = 30,
+                FlowDirection = FlowDirection.LeftToRight,
+                WrapContents = false,
+                Padding = new Padding(4, 2, 0, 0),
+                BackColor = QFG5Theme.ColorSurface
+            };
+            listViewButton = new Button
+            {
+                Text = "List",
+                Width = 62,
+                Height = 24,
+                FlatStyle = FlatStyle.Flat,
+                ForeColor = QFG5Theme.ColorTextPrimary,
+                BackColor = QFG5Theme.ColorSurface
+            };
+            thumbnailViewButton = new Button
+            {
+                Text = "Thumbs",
+                Width = 72,
+                Height = 24,
+                FlatStyle = FlatStyle.Flat,
+                ForeColor = QFG5Theme.ColorTextPrimary,
+                BackColor = QFG5Theme.ColorSurface
+            };
+            listViewButton.Click += (s, e) => SetFileView(false);
+            thumbnailViewButton.Click += (s, e) => SetFileView(true);
+            viewToolbar.Controls.Add(listViewButton);
+            viewToolbar.Controls.Add(thumbnailViewButton);
+
             convertedListBox = new ListBox
             {
                 Dock = DockStyle.Fill,
@@ -218,7 +186,40 @@ namespace QFG5Extractor.Resources.Model
             convertedListBox.SelectedIndexChanged += ConvertedListBox_SelectedIndexChanged;
             toolTip.SetToolTip(convertedListBox, "List of generated output files. Click a .bmp file to preview its texture.");
 
+            thumbnailImages = new ImageList
+            {
+                ColorDepth = ColorDepth.Depth32Bit,
+                ImageSize = new Size(96, 72),
+                TransparentColor = Color.Transparent
+            };
+            thumbnailListView = new ListView
+            {
+                Dock = DockStyle.Fill,
+                View = View.LargeIcon,
+                LargeImageList = thumbnailImages,
+                BackColor = QFG5Theme.ColorSurfaceRecessed,
+                ForeColor = QFG5Theme.ColorTextPrimary,
+                BorderStyle = BorderStyle.None,
+                MultiSelect = false,
+                HideSelection = false,
+                Visible = false
+            };
+            thumbnailListView.SelectedIndexChanged += ThumbnailListView_SelectedIndexChanged;
+            toolTip.SetToolTip(thumbnailListView, "BMP texture thumbnails. Select one to preview it.");
+
+            thumbnailEmptyLabel = new Label
+            {
+                Dock = DockStyle.Fill,
+                Text = "Thumbnails are available for BMP exports.",
+                ForeColor = QFG5Theme.ColorTextMuted,
+                TextAlign = ContentAlignment.MiddleCenter,
+                Visible = false
+            };
+
             listContent.Controls.Add(convertedListBox);
+            listContent.Controls.Add(thumbnailListView);
+            listContent.Controls.Add(thumbnailEmptyLabel);
+            listContent.Controls.Add(viewToolbar);
             listContent.Controls.Add(lblListHeader);
             listFrame.Controls.Add(listContent);
             split.Panel1.Controls.Add(listFrame);
@@ -250,7 +251,7 @@ namespace QFG5Extractor.Resources.Model
             {
                 if (previewPictureBox.Image == null)
                 {
-                    string emptyMsg = "No texture preview selected.\n\nRun 'Export BMP' and select a file to preview.";
+                    string emptyMsg = "No texture preview selected.\n\nModel textures load automatically when this tab opens.";
                     using (var sf = new StringFormat { Alignment = StringAlignment.Center, LineAlignment = StringAlignment.Center })
                     using (var brush = new SolidBrush(QFG5Theme.ColorTextMuted))
                     {
@@ -325,31 +326,87 @@ namespace QFG5Extractor.Resources.Model
             footerTable.Controls.Add(lblFileCount, 1, 1);
 
             // Add sections to main layout
-            mainLayout.Controls.Add(new QFG5CollapsibleSection("MODEL FOLDERS & OPERATION", topTable, 166), 0, 0);
+            mainLayout.Controls.Add(topTable, 0, 0);
             mainLayout.Controls.Add(split, 0, 1);
             mainLayout.Controls.Add(footerTable, 0, 2);
 
             this.Controls.Add(mainLayout);
         }
 
+        public void AutoLoad()
+        {
+            if (operationComboBox.ComboBox.SelectedIndex == 0)
+                RunOperation(true);
+            else
+            {
+                string inputFolder = SharedState.GetAssetDataPath("hdnw", "mdl");
+                if (!DirectoryHasFiles(inputFolder, ".mdl"))
+                {
+                    try
+                    {
+                        AssetArchiveHelper.EnsureExtracted("HDNW.SPK");
+                    }
+                    catch (Exception ex)
+                    {
+                        SetStatus("Unable to load model files: " + ex.Message, Color.Firebrick);
+                        currentFileLabel.Text = "Status: Error";
+                        Logger.LogError("ModelTab", ex.Message);
+                    }
+                }
+                LoadOutputFiles(SharedState.GetModsPath("hdnw", "mdl"), ".bmp");
+            }
+        }
+
         private void RunButton_Click(object sender, EventArgs e)
         {
-            // Implementation preserved but updated to use new fields
-            string inputFolder = inputFolderTextBox.Text.Trim();
-            string outputFolder = outputFolderTextBox.Text.Trim();
-            if (!Directory.Exists(inputFolder) || !Directory.Exists(outputFolder))
+            RunOperation(false);
+        }
+
+        private void RunOperation(bool automatic)
+        {
+            int op = operationComboBox.ComboBox.SelectedIndex;
+            string inputFolder = op == 0 || op == 2
+                ? SharedState.GetAssetDataPath("hdnw", "mdl")
+                : SharedState.GetModsPath("hdnw", "mdl");
+            string outputFolder = SharedState.GetModsPath("hdnw", "mdl");
+
+            if (op == 0 && !DirectoryHasFiles(inputFolder, ".mdl"))
             {
-                MessageBox.Show("Invalid paths.");
+                try
+                {
+                    AssetArchiveHelper.EnsureExtracted("HDNW.SPK");
+                    inputFolder = SharedState.GetModsPath("hdnw", "mdl");
+                }
+                catch (Exception ex)
+                {
+                    SetStatus("Unable to load model files: " + ex.Message, Color.Firebrick);
+                    currentFileLabel.Text = "Status: Error";
+                    Logger.LogError("ModelTab", ex.Message);
+                    if (!automatic)
+                        MessageBox.Show(ex.Message, "Model extraction", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                    return;
+                }
+            }
+
+            if (op == 1 || op == 3)
+                Directory.CreateDirectory(inputFolder);
+            if (!Directory.Exists(inputFolder))
+            {
+                SetStatus("The configured source folder is missing. Check Settings.", Color.Firebrick);
+                if (!automatic)
+                    MessageBox.Show("The configured source folder is missing. Check the Game DATA and Mods folders in Settings.");
                 return;
             }
+            Directory.CreateDirectory(outputFolder);
 
             runButton.Enabled = false;
             ClearPreview();
-            convertedListBox.Items.Clear();
-            lblFileCount.Text = "(0 files)";
-            SetStatus("Running batch conversion...", Color.RoyalBlue);
-
-            int op = operationComboBox.ComboBox.SelectedIndex;
+            if (automatic)
+                LoadOutputFiles(outputFolder, ".bmp");
+            else
+                convertedListBox.Items.Clear();
+            lblFileCount.Text = $"({convertedListBox.Items.Count} files)";
+            SetStatus(automatic ? "Loading model textures..." : "Running batch conversion...", Color.RoyalBlue);
 
             try
             {
@@ -381,6 +438,8 @@ namespace QFG5Extractor.Resources.Model
                 {
                     SetStatus("No applicable files found in input path.", Color.Orange);
                     currentFileLabel.Text = "Status: Idle";
+                    if (automatic && convertedListBox.Items.Count > 0)
+                        convertedListBox.SelectedIndex = 0;
                     return;
                 }
 
@@ -400,6 +459,17 @@ namespace QFG5Extractor.Resources.Model
                     {
                         if (processedBases.Contains(originalMdlName.ToLower())) continue;
                         processedBases.Add(originalMdlName.ToLower());
+                    }
+
+                    if (automatic && exportBitmap)
+                    {
+                        string existingOutput = FindOutputFile(outputFolder, baseName, ".bmp");
+                        if (existingOutput != null)
+                        {
+                            count++;
+                            progressBar.Value = (int)((float)count / workingFiles.Count * 100);
+                            continue;
+                        }
                     }
 
                     currentFileLabel.Text = "Processing: " + originalMdlName;
@@ -439,7 +509,9 @@ namespace QFG5Extractor.Resources.Model
 
                 SetStatus($"Operation completed. Processed {count} files.", Color.ForestGreen);
                 currentFileLabel.Text = "Status: Finished";
-                lblFileCount.Text = $"({count} files)";
+                lblFileCount.Text = $"({convertedListBox.Items.Count} files)";
+                if (automatic && convertedListBox.Items.Count > 0)
+                    convertedListBox.SelectedIndex = 0;
             }
             catch (Exception ex)
             {
@@ -451,6 +523,126 @@ namespace QFG5Extractor.Resources.Model
             {
                 runButton.Enabled = true;
             }
+        }
+
+        private bool DirectoryHasFiles(string folder, string extension)
+        {
+            return Directory.Exists(folder) &&
+                Array.Exists(Directory.GetFiles(folder), file =>
+                    string.Equals(Path.GetExtension(file), extension, StringComparison.OrdinalIgnoreCase));
+        }
+
+        private void LoadOutputFiles(string folder, string extension)
+        {
+            convertedListBox.Items.Clear();
+            thumbnailListView.Items.Clear();
+            thumbnailImages.Images.Clear();
+            if (!Directory.Exists(folder)) return;
+
+            string[] files = Directory.GetFiles(folder);
+            Array.Sort(files, StringComparer.OrdinalIgnoreCase);
+            foreach (string file in files)
+            {
+                if (string.Equals(Path.GetExtension(file), extension, StringComparison.OrdinalIgnoreCase))
+                {
+                    string fileName = Path.GetFileName(file);
+                    convertedListBox.Items.Add(fileName);
+                    if (string.Equals(Path.GetExtension(file), ".bmp", StringComparison.OrdinalIgnoreCase))
+                        AddThumbnail(file, fileName);
+                }
+            }
+            lblFileCount.Text = $"({convertedListBox.Items.Count} files)";
+        }
+
+        private void AddThumbnail(string filePath, string fileName)
+        {
+            try
+            {
+                using (Image source = Image.FromFile(filePath))
+                using (Image thumbnail = source.GetThumbnailImage(96, 72, () => false, IntPtr.Zero))
+                {
+                    Bitmap thumbnailCopy = new Bitmap(thumbnail);
+                    thumbnailImages.Images.Add(fileName, thumbnailCopy);
+                    // Don't dispose thumbnailCopy here - ImageList manages the image lifetime
+                }
+                thumbnailListView.Items.Add(new ListViewItem(fileName, fileName));
+            }
+            catch (Exception ex)
+            {
+                Logger.LogError("ModelTab", "Could not create thumbnail for " + fileName + ": " + ex.Message);
+            }
+        }
+
+        private void SetFileView(bool showThumbnails)
+        {
+            convertedListBox.Visible = !showThumbnails;
+            thumbnailListView.Visible = showThumbnails;
+            thumbnailEmptyLabel.Visible = false;
+            listViewButton.Enabled = showThumbnails;
+            thumbnailViewButton.Enabled = !showThumbnails;
+
+            if (showThumbnails)
+            {
+                string selectedFile = convertedListBox.SelectedItem == null
+                    ? null
+                    : convertedListBox.SelectedItem.ToString();
+                bool hasThumbnails = thumbnailListView.Items.Count > 0;
+                thumbnailListView.Visible = hasThumbnails;
+                thumbnailEmptyLabel.Visible = !hasThumbnails;
+                thumbnailListView.SelectedItems.Clear();
+                if (!string.IsNullOrEmpty(selectedFile))
+                {
+                    foreach (ListViewItem item in thumbnailListView.Items)
+                    {
+                        if (string.Equals(item.Text, selectedFile, StringComparison.OrdinalIgnoreCase))
+                        {
+                            item.Selected = true;
+                            item.EnsureVisible();
+                            break;
+                        }
+                    }
+                }
+            }
+            else if (thumbnailListView.SelectedItems.Count > 0)
+            {
+                thumbnailListView.Visible = true;
+                thumbnailEmptyLabel.Visible = false;
+                string selectedFile = thumbnailListView.SelectedItems[0].Text;
+                int index = convertedListBox.Items.IndexOf(selectedFile);
+                if (index >= 0)
+                    convertedListBox.SelectedIndex = index;
+            }
+        }
+
+        private void ThumbnailListView_SelectedIndexChanged(object sender, EventArgs e)
+        {
+            if (syncingViews || thumbnailListView.SelectedItems.Count == 0)
+                return;
+
+            syncingViews = true;
+            try
+            {
+                string selectedFile = thumbnailListView.SelectedItems[0].Text;
+                int index = convertedListBox.Items.IndexOf(selectedFile);
+                if (index >= 0)
+                    convertedListBox.SelectedIndex = index;
+            }
+            finally
+            {
+                syncingViews = false;
+            }
+        }
+
+        private string FindOutputFile(string folder, string baseName, string extension)
+        {
+            if (!Directory.Exists(folder)) return null;
+            string expectedName = baseName + extension;
+            foreach (string file in Directory.GetFiles(folder))
+            {
+                if (string.Equals(Path.GetFileName(file), expectedName, StringComparison.OrdinalIgnoreCase))
+                    return file;
+            }
+            return null;
         }
 
         private void ConvertedListBox_SelectedIndexChanged(object sender, EventArgs e)
@@ -471,11 +663,12 @@ namespace QFG5Extractor.Resources.Model
                 return;
             }
 
-            string fullPath = Path.Combine(outputFolderTextBox.Text, fileName);
+            string outputFolder = SharedState.GetModsPath("hdnw", "mdl");
+            string fullPath = Path.Combine(outputFolder, fileName);
             if (!File.Exists(fullPath))
             {
-                string upper = Path.Combine(outputFolderTextBox.Text, Path.GetFileNameWithoutExtension(fileName) + ".BMP");
-                string lower = Path.Combine(outputFolderTextBox.Text, Path.GetFileNameWithoutExtension(fileName) + ".bmp");
+                string upper = Path.Combine(outputFolder, Path.GetFileNameWithoutExtension(fileName) + ".BMP");
+                string lower = Path.Combine(outputFolder, Path.GetFileNameWithoutExtension(fileName) + ".bmp");
                 if (File.Exists(upper)) fullPath = upper;
                 else if (File.Exists(lower)) fullPath = lower;
             }
@@ -485,7 +678,8 @@ namespace QFG5Extractor.Resources.Model
                 try
                 {
                     ClearPreview();
-                    previewPictureBox.Image = Image.FromFile(fullPath);
+                    using (Image source = Image.FromFile(fullPath))
+                        previewPictureBox.Image = new Bitmap(source);
                     SetStatus("Previewing: " + fileName, QFG5Theme.ColorTextPrimary);
                 }
                 catch (Exception ex)
@@ -523,6 +717,8 @@ namespace QFG5Extractor.Resources.Model
             if (disposing)
             {
                 ClearPreview();
+                if (thumbnailImages != null)
+                    thumbnailImages.Dispose();
             }
             base.Dispose(disposing);
         }

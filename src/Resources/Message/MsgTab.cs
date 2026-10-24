@@ -1,6 +1,7 @@
 using QFG5Extractor.Core;
 using QFG5Extractor.Core.UI;
 using QFG5Extractor.Resources.Message;
+using QFG5Extractor.Storage.SPK;
 using System;
 using System.Collections.Generic;
 using System.Drawing;
@@ -11,8 +12,6 @@ namespace QFG5Extractor.Resources.Message
 {
     public class MsgTab : UserControl
     {
-        private QFG5PathField qgmFolderTextBox;
-        private QFG5PathField outputFolderTextBox;
         private QFG5Button runButton;
         private QFG5Button repackButton;
         private QFG5Button btnSaveEdits;
@@ -30,21 +29,6 @@ namespace QFG5Extractor.Resources.Message
             Dock = DockStyle.Fill;
             this.BackColor = Color.Transparent;
             InitializeComponent();
-
-            SharedState.OnBaseDataPathChanged += UpdatePaths;
-            if (!string.IsNullOrEmpty(SharedState.BaseDataPath))
-            {
-                UpdatePaths(SharedState.BaseDataPath);
-            }
-            SharedState.OnExtractionPathChanged += (p) => { outputFolderTextBox.Text = p; };
-            if (!string.IsNullOrEmpty(SharedState.ExtractionPath)) outputFolderTextBox.Text = SharedState.ExtractionPath;
-        }
-
-        private void UpdatePaths(string path)
-        {
-            string qgmDir = Path.Combine(path, "cdn" + Path.DirectorySeparatorChar + "QGM");
-            if (!Directory.Exists(qgmDir)) qgmDir = Path.Combine(path, "cdn" + Path.DirectorySeparatorChar + "qgm");
-            if (Directory.Exists(qgmDir)) qgmFolderTextBox.Text = qgmDir;
         }
 
         private void InitializeComponent()
@@ -55,67 +39,11 @@ namespace QFG5Extractor.Resources.Message
             {
                 Dock = DockStyle.Fill,
                 ColumnCount = 1,
-                RowCount = 3,
+                RowCount = 2,
                 Padding = new Padding(QFG5Layout.ContentPadding)
             };
-            mainLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 110)); // Collapsible QGM and output paths
             mainLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 100f)); // Center: Split view (List + Editor)
             mainLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 62));  // Bottom: 2-Row Footer
-
-            // --- Top Section: 2 Symmetric Path Rows (QGM Path, Output Path) ---
-            QFG5TableLayoutPanel topTable = new QFG5TableLayoutPanel
-            {
-                Dock = DockStyle.Fill,
-                ColumnCount = 3,
-                RowCount = 2,
-                Margin = new Padding(0, 0, 0, 8)
-            };
-            topTable.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, QFG5Layout.LabelWidth)); // 100px
-            topTable.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100f));                    // Stretch
-            topTable.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 95));                    // Browse button width (95px)
-
-            topTable.RowStyles.Add(new RowStyle(SizeType.Absolute, 36)); // Row 0: QGM Path
-            topTable.RowStyles.Add(new RowStyle(SizeType.Absolute, 36)); // Row 1: Output Path
-
-            // Row 0: QGM Path
-            Label lblQgm = new Label
-            {
-                Text = "QGM Path:",
-                ForeColor = QFG5Theme.ColorTextPrimary,
-                Font = QFG5Theme.BodyBoldFont,
-                Dock = DockStyle.Fill,
-                TextAlign = ContentAlignment.MiddleLeft
-            };
-            qgmFolderTextBox = new QFG5PathField { Dock = DockStyle.Fill, Height = 30, Margin = new Padding(0, 3, 4, 3), TabIndex = 0, AccessibleName = "QGM Path" };
-            toolTip.SetToolTip(qgmFolderTextBox, "Source folder containing Quest for Glory V .QGM message files (cdn/QGM)");
-
-            QFG5Button btnBrowseQgm = new QFG5Button { Text = "Browse", Dock = DockStyle.Fill, Height = 30, Margin = new Padding(0, 3, 0, 3), TabIndex = 1 };
-            btnBrowseQgm.Click += (s, e) => qgmFolderTextBox.Text = BrowseFolder(qgmFolderTextBox.Text);
-            toolTip.SetToolTip(btnBrowseQgm, "Browse for folder containing .QGM files");
-
-            topTable.Controls.Add(lblQgm, 0, 0);
-            topTable.Controls.Add(qgmFolderTextBox, 1, 0);
-            topTable.Controls.Add(btnBrowseQgm, 2, 0);
-
-            // Row 1: Output Path
-            Label lblOutput = new Label
-            {
-                Text = "Output Path:",
-                ForeColor = QFG5Theme.ColorTextPrimary,
-                Font = QFG5Theme.BodyBoldFont,
-                Dock = DockStyle.Fill,
-                TextAlign = ContentAlignment.MiddleLeft
-            };
-            outputFolderTextBox = new QFG5PathField { Dock = DockStyle.Fill, Height = 30, Margin = new Padding(0, 3, 4, 3), TabIndex = 2, AccessibleName = "Output Path" };
-            toolTip.SetToolTip(outputFolderTextBox, "Destination folder for extracted .TXT message files");
-
-            QFG5Button btnBrowseOut = new QFG5Button { Text = "Browse", Dock = DockStyle.Fill, Height = 30, Margin = new Padding(0, 3, 0, 3), TabIndex = 3 };
-            btnBrowseOut.Click += (s, e) => outputFolderTextBox.Text = BrowseFolder(outputFolderTextBox.Text);
-            toolTip.SetToolTip(btnBrowseOut, "Browse for destination output directory");
-
-            topTable.Controls.Add(lblOutput, 0, 1);
-            topTable.Controls.Add(outputFolderTextBox, 1, 1);
-            topTable.Controls.Add(btnBrowseOut, 2, 1);
 
             // --- Center Section: Split View (Message List + Text Editor) ---
             msgSplit = new SplitContainer
@@ -222,7 +150,7 @@ namespace QFG5Extractor.Resources.Message
             toolTip.SetToolTip(txtEditor, "Viewer and editor for extracted dialogue and message text");
 
             // Empty state guidance in editor
-            txtEditor.Text = "No message file selected.\n\nRun 'Extract All' to convert .QGM archives, then select a file from the list to view and edit its dialogue.";
+            txtEditor.Text = "No message file selected.\n\nMessage files load automatically when this tab opens. Select a file from the list to view and edit its dialogue.";
 
             editorContent.Controls.Add(txtEditor);
             editorContent.Controls.Add(editorHeaderBar);
@@ -246,7 +174,7 @@ namespace QFG5Extractor.Resources.Message
             // Row 0: High-Level Status + Progress Bar
             statusLabel = new Label
             {
-                Text = "Ready — Click 'Extract All' to convert QGM message files.",
+                Text = "Message files load automatically when this tab opens.",
                 ForeColor = QFG5Theme.ColorGold,
                 Font = QFG5Theme.BodyBoldFont,
                 Dock = DockStyle.Fill,
@@ -307,7 +235,7 @@ namespace QFG5Extractor.Resources.Message
 
             repackButton = new QFG5Button { Text = "Repack All", Dock = DockStyle.Fill, Height = 30, Margin = new Padding(0, 1, 4, 1), TabIndex = 7 };
             repackButton.Click += RepackButtonClick;
-            toolTip.SetToolTip(repackButton, "Repack edited message files back into .QGM format (under development)");
+            toolTip.SetToolTip(repackButton, "Rebuild edited QGM files and repack CDN.SPK into Mods/repacked");
 
             runButton = new QFG5Button { Text = "Extract All", Dock = DockStyle.Fill, Height = 30, Margin = new Padding(2, 1, 0, 1), TabIndex = 8 };
             runButton.Click += RunButtonClick;
@@ -320,50 +248,77 @@ namespace QFG5Extractor.Resources.Message
             footerTable.Controls.Add(actionButtonsPanel, 1, 1);
 
             // Assemble main layout
-            mainLayout.Controls.Add(new QFG5CollapsibleSection("MESSAGE FOLDERS", topTable, 110), 0, 0);
-            mainLayout.Controls.Add(msgSplit, 0, 1);
-            mainLayout.Controls.Add(footerTable, 0, 2);
+            mainLayout.Controls.Add(msgSplit, 0, 0);
+            mainLayout.Controls.Add(footerTable, 0, 1);
 
             this.Controls.Add(mainLayout);
         }
 
-        private static string BrowseFolder(string currentPath)
+        public void AutoLoad()
         {
-            using (FolderBrowserDialog dialog = new FolderBrowserDialog())
-            {
-                if (!string.IsNullOrEmpty(currentPath) && Directory.Exists(currentPath)) dialog.SelectedPath = currentPath;
-                if (dialog.ShowDialog() == DialogResult.OK) return dialog.SelectedPath;
-            }
-            return currentPath;
+            RunExtraction(true);
         }
 
         private void RunButtonClick(object sender, EventArgs e)
         {
-            string qgmFolder = qgmFolderTextBox.Text.Trim();
-            string outputFolder = outputFolderTextBox.Text.Trim();
+            RunExtraction(false);
+        }
 
-            if (!Directory.Exists(qgmFolder) || !Directory.Exists(outputFolder))
+        private void RunExtraction(bool automatic)
+        {
+            string qgmFolder = SharedState.GetAssetDataPath("cdn", "QGM");
+            string outputFolder = SharedState.GetModsPath("cdn", "QGM");
+
+            if (!DirectoryHasFiles(qgmFolder, ".qgm"))
             {
-                MessageBox.Show("Please ensure both paths exist.", "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                try
+                {
+                    AssetArchiveHelper.EnsureExtracted("CDN.SPK");
+                    qgmFolder = SharedState.GetModsPath("cdn", "QGM");
+                }
+                catch (Exception ex)
+                {
+                    SetStatus("Unable to load message files: " + ex.Message, Color.Firebrick);
+                    currentFileLabel.Text = "Status: Error";
+                    Logger.LogError("MsgTab", ex.Message);
+                    if (!automatic)
+                        MessageBox.Show(ex.Message, "Message extraction", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                    return;
+                }
+            }
+
+            if (!Directory.Exists(qgmFolder))
+            {
+                SetStatus("The configured source folder is missing. Check Settings.", Color.Firebrick);
+                if (!automatic)
+                    MessageBox.Show("The Game DATA Folder does not contain cdn/QGM.", "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
                 return;
             }
 
+            Directory.CreateDirectory(outputFolder);
             runButton.Enabled = false;
             btnSaveEdits.Enabled = false;
-            convertedListBox.Items.Clear();
+            if (automatic)
+                LoadOutputFiles(outputFolder);
+            else
+                convertedListBox.Items.Clear();
             txtEditor.Text = "Extracting messages...";
-            lblFileCount.Text = "(0 files)";
-            SetStatus("Running extraction...", Color.RoyalBlue);
+            lblFileCount.Text = $"({convertedListBox.Items.Count} files)";
+            SetStatus(automatic ? "Loading message files..." : "Running extraction...", Color.RoyalBlue);
 
             int converted = 0;
             int failed = 0;
 
             try
             {
-                string[] allFiles = Directory.GetFiles(qgmFolder, "*.qgm");
-                if (allFiles.Length == 0) allFiles = Directory.GetFiles(qgmFolder, "*.QGM");
+                string[] allFiles = Directory.GetFiles(qgmFolder, "*.*");
+                Array.Sort(allFiles, StringComparer.OrdinalIgnoreCase);
+                List<string> qgmFiles = new List<string>();
+                foreach (string file in allFiles)
+                    if (string.Equals(Path.GetExtension(file), ".qgm", StringComparison.OrdinalIgnoreCase))
+                        qgmFiles.Add(file);
 
-                if (allFiles.Length == 0)
+                if (qgmFiles.Count == 0)
                 {
                     SetStatus("No QGM files found in selected path.", Color.Orange);
                     currentFileLabel.Text = "Status: Idle";
@@ -372,18 +327,40 @@ namespace QFG5Extractor.Resources.Message
                 }
 
                 progressBar.Value = 0;
-                int total = allFiles.Length;
+                int total = qgmFiles.Count;
 
                 for (int i = 0; i < total; i++)
                 {
-                    string file = allFiles[i];
+                    string file = qgmFiles[i];
                     string baseName = Path.GetFileNameWithoutExtension(file);
+                    string outputFile = Path.Combine(outputFolder, baseName + ".txt");
+                    if (automatic && FindOutputFile(outputFolder, baseName) != null)
+                    {
+                        string existingOutput = FindOutputFile(outputFolder, baseName);
+                        string metadataPath = MsgConverter.GetMetadataPath(existingOutput);
+                        if (!File.Exists(metadataPath))
+                        {
+                            currentFileLabel.Text = "Indexing: " + baseName;
+                            try
+                            {
+                                MsgConverter.CreateMetadata(file, existingOutput);
+                            }
+                            catch (Exception ex)
+                            {
+                                Logger.LogError("MsgTab", "Could not prepare QGM sidecar for " + baseName + ": " + ex.Message);
+                            }
+                        }
+                        progressBar.Value = (int)((float)(i + 1) / total * 100);
+                        continue;
+                    }
+
                     currentFileLabel.Text = "Extracting: " + baseName;
                     Application.DoEvents();
 
                     try
                     {
-                        MsgConverter.ExtractMsg(file, Path.Combine(outputFolder, baseName + ".txt"));
+                        MsgConverter.ExtractMsg(file, outputFile);
+                        MsgConverter.CreateMetadata(file, outputFile);
                         converted++;
                         convertedListBox.Items.Add(baseName + ".txt");
                         lblFileCount.Text = $"({converted} of {total} files)";
@@ -396,11 +373,17 @@ namespace QFG5Extractor.Resources.Message
                     progressBar.Value = (int)((float)(i + 1) / total * 100);
                 }
 
-                SetStatus($"Done. Extracted {converted} files.", Color.ForestGreen);
+                SetStatus(automatic
+                    ? $"Loaded {convertedListBox.Items.Count} message files."
+                    : $"Done. Extracted {converted} files.", Color.ForestGreen);
                 currentFileLabel.Text = "Status: Finished";
-                lblFileCount.Text = $"({converted} files)";
-                txtEditor.Text = $"Extraction complete ({converted} files converted).\n\nSelect a file on the left to view and edit dialogue.";
-                MessageBox.Show($"Done. Extracted {converted} files.", "Message Tab", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                lblFileCount.Text = $"({convertedListBox.Items.Count} files)";
+                if (automatic && convertedListBox.Items.Count > 0)
+                    convertedListBox.SelectedIndex = 0;
+                else
+                    txtEditor.Text = $"Extraction complete ({converted} files converted).\n\nSelect a file on the left to view and edit dialogue.";
+                if (!automatic)
+                    MessageBox.Show($"Done. Extracted {converted} files.", "Message Tab", MessageBoxButtons.OK, MessageBoxIcon.Information);
             }
             catch (Exception ex)
             {
@@ -414,16 +397,180 @@ namespace QFG5Extractor.Resources.Message
             }
         }
 
+        private bool DirectoryHasFiles(string folder, string extension)
+        {
+            return Directory.Exists(folder) &&
+                Array.Exists(Directory.GetFiles(folder), file =>
+                    string.Equals(Path.GetExtension(file), extension, StringComparison.OrdinalIgnoreCase));
+        }
+
+        private void LoadOutputFiles(string folder)
+        {
+            convertedListBox.Items.Clear();
+            if (!Directory.Exists(folder)) return;
+            string[] files = Directory.GetFiles(folder);
+            Array.Sort(files, StringComparer.OrdinalIgnoreCase);
+            foreach (string file in files)
+            {
+                if (string.Equals(Path.GetExtension(file), ".txt", StringComparison.OrdinalIgnoreCase))
+                    convertedListBox.Items.Add(Path.GetFileName(file));
+            }
+            lblFileCount.Text = $"({convertedListBox.Items.Count} files)";
+        }
+
+        private string FindOutputFile(string folder, string baseName)
+        {
+            if (!Directory.Exists(folder)) return null;
+            string expectedName = baseName + ".txt";
+            foreach (string file in Directory.GetFiles(folder))
+            {
+                if (string.Equals(Path.GetFileName(file), expectedName, StringComparison.OrdinalIgnoreCase))
+                    return file;
+            }
+            return null;
+        }
+
         private void RepackButtonClick(object sender, EventArgs e)
         {
-            MessageBox.Show("Repack functionality for Message tab is under development.", "Info", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            if (!SaveCurrentEdits())
+                return;
+
+            string textFolder = SharedState.GetModsPath("cdn", "QGM");
+            string originalArchive = SpkConverter.FindArchiveFile(SharedState.BaseDataPath, "CDN.SPK");
+            if (string.IsNullOrEmpty(originalArchive))
+            {
+                string message = "The original CDN.SPK could not be found in the configured Game DATA folder. It is required to repack messages.";
+                SetStatus(message, Color.Firebrick);
+                MessageBox.Show(message, "Message repack", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                return;
+            }
+
+            if (!Directory.Exists(textFolder))
+            {
+                string message = "No extracted message files were found under Mods/cdn/QGM.";
+                SetStatus(message, Color.Firebrick);
+                MessageBox.Show(message, "Message repack", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return;
+            }
+
+            string[] textFiles = Directory.GetFiles(textFolder, "*.txt", SearchOption.TopDirectoryOnly);
+            Array.Sort(textFiles, StringComparer.OrdinalIgnoreCase);
+            if (textFiles.Length == 0)
+            {
+                SetStatus("No message TXT files were found to repack.", Color.Orange);
+                return;
+            }
+
+            string tempFolder = Path.Combine(Path.GetTempPath(), "QFG5Extractor-QGM-" + Guid.NewGuid().ToString("N"));
+            string outputArchive = Path.Combine(SharedState.ExtractionPath, "repacked", "CDN.SPK");
+            repackButton.Enabled = false;
+            runButton.Enabled = false;
+            btnSaveEdits.Enabled = false;
+            progressBar.Value = 0;
+
+            try
+            {
+                Directory.CreateDirectory(tempFolder);
+                for (int i = 0; i < textFiles.Length; i++)
+                {
+                    string textPath = textFiles[i];
+                    string baseName = Path.GetFileNameWithoutExtension(textPath);
+                    string metadataPath = MsgConverter.GetMetadataPath(textPath);
+                    if (!File.Exists(metadataPath))
+                        throw new InvalidDataException(
+                            "Missing QGM sidecar for " + Path.GetFileName(textPath) +
+                            ". Extract the message files again before repacking.");
+
+                    currentFileLabel.Text = "Building: " + baseName;
+                    Application.DoEvents();
+                    MsgConverter.RebuildMsg(
+                        textPath,
+                        metadataPath,
+                        Path.Combine(tempFolder, baseName + ".QGM"));
+                    progressBar.Value = (int)((float)(i + 1) / textFiles.Length * 100);
+                }
+
+                foreach (string rebuiltFile in Directory.GetFiles(tempFolder, "*.QGM"))
+                {
+                    string targetFile = Path.Combine(textFolder, Path.GetFileName(rebuiltFile));
+                    File.Copy(rebuiltFile, targetFile, true);
+                }
+
+                string outputDirectory = Path.GetDirectoryName(outputArchive);
+                if (!Directory.Exists(outputDirectory))
+                    Directory.CreateDirectory(outputDirectory);
+                currentFileLabel.Text = "Repacking CDN.SPK...";
+                Application.DoEvents();
+                SpkConverter.Repack(
+                    originalArchive,
+                    SharedState.GetArchiveModsPath("CDN.SPK"),
+                    outputArchive);
+
+                SetStatus("Rebuilt " + textFiles.Length + " QGM files and repacked CDN.SPK.", Color.ForestGreen);
+                currentFileLabel.Text = "Status: Finished";
+                MessageBox.Show(
+                    "Rebuilt " + textFiles.Length + " QGM files and repacked the archive:\n" + outputArchive,
+                    "Message repack",
+                    MessageBoxButtons.OK,
+                    MessageBoxIcon.Information);
+            }
+            catch (Exception ex)
+            {
+                SetStatus("Repack failed: " + ex.Message, Color.Firebrick);
+                currentFileLabel.Text = "Status: Error";
+                Logger.LogError("MsgTab", "QGM repack failed: " + ex);
+                MessageBox.Show(ex.Message, "Message repack failed", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            }
+            finally
+            {
+                try
+                {
+                    if (Directory.Exists(tempFolder))
+                        Directory.Delete(tempFolder, true);
+                }
+                catch (IOException ex)
+                {
+                    Logger.LogError("MsgTab", "Could not remove temporary QGM files: " + ex.Message);
+                }
+                catch (UnauthorizedAccessException ex)
+                {
+                    Logger.LogError("MsgTab", "Could not remove temporary QGM files: " + ex.Message);
+                }
+                finally
+                {
+                    repackButton.Enabled = true;
+                    runButton.Enabled = true;
+                }
+            }
+        }
+
+        private bool SaveCurrentEdits()
+        {
+            if (!btnSaveEdits.Enabled || convertedListBox.SelectedItem == null)
+                return true;
+
+            string selectedFile = convertedListBox.SelectedItem.ToString();
+            string fullPath = Path.Combine(SharedState.GetModsPath("cdn", "QGM"), selectedFile);
+            try
+            {
+                File.WriteAllText(fullPath, txtEditor.Text);
+                btnSaveEdits.Enabled = false;
+                return true;
+            }
+            catch (Exception ex)
+            {
+                SetStatus("Could not save pending edits: " + ex.Message, Color.Firebrick);
+                Logger.LogError("MsgTab", "Could not save pending edits: " + ex);
+                MessageBox.Show(ex.Message, "Message repack", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                return false;
+            }
         }
 
         private void ConvertedListBox_SelectedIndexChanged(object sender, EventArgs e)
         {
             if (convertedListBox.SelectedItem == null) return;
             string selectedFile = convertedListBox.SelectedItem.ToString();
-            string outFolder = outputFolderTextBox.Text.Trim();
+            string outFolder = SharedState.GetModsPath("cdn", "QGM");
             string fullPath = Path.Combine(outFolder, selectedFile);
 
             if (File.Exists(fullPath))
@@ -450,19 +597,8 @@ namespace QFG5Extractor.Resources.Message
 
         private void BtnSaveEdits_Click(object sender, EventArgs e)
         {
-            if (convertedListBox.SelectedItem == null) return;
-            string selectedFile = convertedListBox.SelectedItem.ToString();
-            string fullPath = Path.Combine(outputFolderTextBox.Text.Trim(), selectedFile);
-            try
-            {
-                File.WriteAllText(fullPath, txtEditor.Text);
-                SetStatus($"Saved: {selectedFile}", Color.ForestGreen);
-                btnSaveEdits.Enabled = false;
-            }
-            catch (Exception ex)
-            {
-                SetStatus($"Save Failed: {ex.Message}", Color.Firebrick);
-            }
+            if (SaveCurrentEdits())
+                SetStatus("Saved: " + convertedListBox.SelectedItem, Color.ForestGreen);
         }
 
         private void SetStatus(string text, Color color)

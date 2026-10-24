@@ -2,12 +2,18 @@ using QFG5Extractor.Core;
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Text;
 
 namespace QFG5Extractor.Resources.Message
 {
     public class MsgConverter
     {
         public static void ExtractMsg(string inputFilePath, string outputFilePath)
+        {
+            File.WriteAllText(outputFilePath, DecodeMessageData(File.ReadAllBytes(inputFilePath)));
+        }
+
+        private static string DecodeMessageData(byte[] msgData)
         {
             Dictionary<int, char> firstLetterTable = new Dictionary<int, char>();
             Dictionary<int, char> secondLetterTable = new Dictionary<int, char>();
@@ -128,8 +134,6 @@ namespace QFG5Extractor.Resources.Message
 
             string output = null;
 
-            byte[] msgData = File.ReadAllBytes(inputFilePath);
-            
             int fileHeaderLength = 16;
             int dataStartIndex = fileHeaderLength;
             int msgHeaderLength = 32;
@@ -157,24 +161,42 @@ namespace QFG5Extractor.Resources.Message
             char tmpThird;
             char tmpFourth;
 
-            fileFormatVersion = msgData[4];
-
-            //version differences 
-            //v2 = qfg5demo, v3 = qfg5, v4 = qfg5 + obfuscation
-            if (fileFormatVersion > 3) {
-                msgObfuscated = true;
+            if (msgData == null || msgData.Length < 8 ||
+                msgData[0] != 0x20 || msgData[1] != 0x4D ||
+                msgData[2] != 0x47 || msgData[3] != 0x51)
+            {
+                throw new InvalidDataException("The input is not a valid QGM file.");
             }
-            else if (fileFormatVersion == 2)
+
+            fileFormatVersion = BitConverter.ToInt32(msgData, 4);
+
+            // Version 2 uses shorter headers; v3/v4 use per-block obfuscation flags.
+            if (fileFormatVersion == 2)
             {
                 fileHeaderLength = 14;
                 dataStartIndex = fileHeaderLength;
                 msgHeaderLength = 28;
+                if (msgData.Length < fileHeaderLength)
+                    throw new InvalidDataException("QGM v2 file header is truncated.");
+            }
+            else if (msgData.Length < fileHeaderLength)
+            {
+                throw new InvalidDataException("QGM file header is truncated.");
             }
 
             while ((dataStartIndex + 1) < msgData.Length)
             {
                 tmpOutput = null;
                 byte[] tmp;
+
+                if (fileFormatVersion != 2)
+                {
+                    if (dataStartIndex + msgHeaderLength > msgData.Length)
+                        throw new InvalidDataException("QGM message header is truncated.");
+
+                    ushort blockFlags = BitConverter.ToUInt16(msgData, dataStartIndex + 18);
+                    msgObfuscated = (blockFlags & 0x0004) != 0;
+                }
 
                 if (fileFormatVersion == 2)
                 {
@@ -184,19 +206,33 @@ namespace QFG5Extractor.Resources.Message
                 {
                     tmp = new byte[] { msgData[dataStartIndex + 24], msgData[dataStartIndex + 25] }; //Read text length from header
                 }
-                tmpTextLength = BitConverter.ToInt16(tmp, 0);
+                tmpTextLength = BitConverter.ToUInt16(tmp, 0);
 
                 //Determine text start
                 tmpTextStartIndex = dataStartIndex + msgHeaderLength;
+                if (fileFormatVersion != 2)
+                {
+                    ushort optionCount = BitConverter.ToUInt16(msgData, dataStartIndex + 16);
+                    ushort labelPresent = BitConverter.ToUInt16(msgData, dataStartIndex + 26);
+                    tmpTextStartIndex += (labelPresent == 0 ? 0 : msgAudIdLength) + optionCount * 8;
+                }
+                int textBodyStart = tmpTextStartIndex;
+                if (tmpTextStartIndex > msgData.Length || tmpTextLength > msgData.Length - tmpTextStartIndex)
+                    throw new InvalidDataException("QGM message text extends beyond the file.");
 
                 //Skip audio ID's
-                if (msgData[tmpTextStartIndex] == 0x41 && msgData[tmpTextStartIndex + 1] == 0x30) //Audio ID's begin with A0
+                if (tmpTextStartIndex + 1 < msgData.Length &&
+                    msgData[tmpTextStartIndex] == 0x41 && msgData[tmpTextStartIndex + 1] == 0x30) //Audio ID's begin with A0
                 {
-                    while (msgData[tmpTextStartIndex] == 0x41 && msgData[tmpTextStartIndex + 1] == 0x30)
+                    while (tmpTextStartIndex + 1 < msgData.Length &&
+                        msgData[tmpTextStartIndex] == 0x41 && msgData[tmpTextStartIndex + 1] == 0x30)
                     {
                         tmpTextStartIndex += msgAudIdLength;
                     }
                 }
+                tmpTextLength -= tmpTextStartIndex - textBodyStart;
+                if (tmpTextLength < 0)
+                    throw new InvalidDataException("A QGM audio identifier exceeds its message text length.");
 
                 if (tmpTextLength == 0)
                 {
@@ -377,14 +413,269 @@ namespace QFG5Extractor.Resources.Message
                     }
                 }
 
-                if (tmpOutput != null)
-                {
-                    output += tmpOutput + Environment.NewLine + Environment.NewLine;
-                }
+                output += (tmpOutput ?? string.Empty) + Environment.NewLine + Environment.NewLine;
 
             }
 
-            File.WriteAllText(outputFilePath, output);
+            return output ?? string.Empty;
+        }
+
+        public static string GetMetadataPath(string textFilePath)
+        {
+            return textFilePath + ".qgmmeta";
+        }
+
+        public static void CreateMetadata(string originalQgmPath, string textFilePath)
+        {
+            byte[] originalData = File.ReadAllBytes(originalQgmPath);
+            List<MessageBlock> blocks = ParseBlocks(originalData);
+            string[] messages = DecodeMessageBlocks(originalData, blocks);
+
+            using (FileStream stream = new FileStream(GetMetadataPath(textFilePath), FileMode.Create, FileAccess.Write))
+            using (BinaryWriter writer = new BinaryWriter(stream, Encoding.UTF8))
+            {
+                writer.Write(new byte[] { (byte)'Q', (byte)'G', (byte)'M', (byte)'M' });
+                writer.Write(1);
+                writer.Write(originalData.Length);
+                writer.Write(originalData);
+                writer.Write(messages.Length);
+                for (int i = 0; i < messages.Length; i++)
+                    writer.Write(messages[i]);
+            }
+        }
+
+        public static void RebuildMsg(string textFilePath, string metadataPath, string outputQgmPath)
+        {
+            byte[] originalData;
+            string[] originalMessages;
+            ReadMetadata(metadataPath, out originalData, out originalMessages);
+
+            List<MessageBlock> blocks = ParseBlocks(originalData);
+            if (originalMessages.Length != blocks.Count)
+                throw new InvalidDataException("The QGM metadata does not match its original message count.");
+
+            string editedText = File.ReadAllText(textFilePath);
+            string originalText = string.Concat(
+                Array.ConvertAll(originalMessages, message => message + Environment.NewLine + Environment.NewLine));
+            string outputDirectory = Path.GetDirectoryName(outputQgmPath);
+            if (!string.IsNullOrEmpty(outputDirectory))
+                Directory.CreateDirectory(outputDirectory);
+            if (NormalizeNewLines(editedText) == NormalizeNewLines(originalText))
+            {
+                File.WriteAllBytes(outputQgmPath, originalData);
+                return;
+            }
+
+            string[] editedMessages = SplitMessages(editedText, originalMessages);
+            using (MemoryStream output = new MemoryStream())
+            using (BinaryWriter writer = new BinaryWriter(output))
+            {
+                writer.Write(originalData, 0, 16);
+                for (int i = 0; i < blocks.Count; i++)
+                {
+                    MessageBlock block = blocks[i];
+                    writer.Write(originalData, block.Offset, block.PayloadOffset - block.Offset);
+
+                    if (string.Equals(editedMessages[i], originalMessages[i], StringComparison.Ordinal))
+                    {
+                        writer.Write(originalData, block.PayloadOffset, block.TextLength);
+                    }
+                    else
+                    {
+                        byte[] textBytes = EncodePlainText(editedMessages[i]);
+                        int prefixLength = GetAudioPrefixLength(originalData, block.PayloadOffset, block.TextLength);
+                        int rebuiltLength = prefixLength + textBytes.Length;
+                        if (rebuiltLength > ushort.MaxValue)
+                            throw new InvalidDataException("Edited message " + (i + 1) + " is too long for the QGM format.");
+
+                        byte[] header = new byte[block.PayloadOffset - block.Offset];
+                        Buffer.BlockCopy(originalData, block.Offset, header, 0, header.Length);
+                        ushort flags = BitConverter.ToUInt16(header, 18);
+                        Buffer.BlockCopy(BitConverter.GetBytes((ushort)(flags & ~0x0004)), 0, header, 18, 2);
+                        Buffer.BlockCopy(BitConverter.GetBytes((ushort)rebuiltLength), 0, header, 24, 2);
+
+                        long headerPosition = output.Position - header.Length;
+                        output.Position = headerPosition;
+                        writer.Write(header);
+                        writer.Write(originalData, block.PayloadOffset, prefixLength);
+                        writer.Write(textBytes);
+                        output.Position = output.Length;
+                    }
+
+                    writer.Write(originalData, block.PayloadOffset + block.TextLength, 4);
+                }
+
+                File.WriteAllBytes(outputQgmPath, output.ToArray());
+            }
+        }
+
+        private sealed class MessageBlock
+        {
+            public int Offset;
+            public int PayloadOffset;
+            public int TextLength;
+            public int EndOffset;
+        }
+
+        private static List<MessageBlock> ParseBlocks(byte[] data)
+        {
+            if (data == null || data.Length < 16 ||
+                data[0] != 0x20 || data[1] != 0x4D ||
+                data[2] != 0x47 || data[3] != 0x51)
+                throw new InvalidDataException("The input is not a valid QGM file.");
+
+            int version = BitConverter.ToInt32(data, 4);
+            if (version != 3 && version != 4)
+                throw new InvalidDataException("Repacking supports QGM versions 3 and 4 only.");
+
+            uint declaredCount = BitConverter.ToUInt32(data, 8);
+            if (declaredCount > 100000)
+                throw new InvalidDataException("The QGM message count is invalid.");
+
+            List<MessageBlock> blocks = new List<MessageBlock>((int)declaredCount);
+            int offset = 16;
+            for (int i = 0; i < declaredCount; i++)
+            {
+                if (offset > data.Length - 32)
+                    throw new InvalidDataException("QGM message " + (i + 1) + " has a truncated header.");
+
+                ushort optionCount = BitConverter.ToUInt16(data, offset + 16);
+                ushort labelPresent = BitConverter.ToUInt16(data, offset + 26);
+                int textLength = BitConverter.ToUInt16(data, offset + 24);
+                long payloadOffset = (long)offset + 32 + (labelPresent == 0 ? 0 : 13) + (long)optionCount * 8;
+                long nextOffset = payloadOffset + textLength + 4;
+                if (payloadOffset > data.Length || nextOffset > data.Length)
+                    throw new InvalidDataException("QGM message " + (i + 1) + " extends beyond the file.");
+
+                blocks.Add(new MessageBlock
+                {
+                    Offset = offset,
+                    PayloadOffset = (int)payloadOffset,
+                    TextLength = textLength,
+                    EndOffset = (int)nextOffset
+                });
+                offset = (int)nextOffset;
+            }
+
+            if (offset != data.Length)
+                throw new InvalidDataException("The QGM record count does not account for the complete file.");
+            return blocks;
+        }
+
+        private static string[] SplitMessages(string text, string[] originalMessages)
+        {
+            string normalized = (text ?? string.Empty).Replace("\r\n", "\n").Replace('\r', '\n');
+            string[] fragments = normalized.Split(new[] { "\n\n" }, StringSplitOptions.None);
+            if (fragments.Length > 0 && fragments[fragments.Length - 1].Length == 0 &&
+                normalized.EndsWith("\n\n", StringComparison.Ordinal))
+                Array.Resize(ref fragments, fragments.Length - 1);
+
+            string[] messages = new string[originalMessages.Length];
+            int fragmentOffset = 0;
+            for (int messageIndex = 0; messageIndex < originalMessages.Length; messageIndex++)
+            {
+                string original = originalMessages[messageIndex].Replace("\r\n", "\n").Replace('\r', '\n');
+                int fragmentCount = original.Split(new[] { "\n\n" }, StringSplitOptions.None).Length;
+                if (fragmentOffset + fragmentCount > fragments.Length)
+                    throw CreateAmbiguousMessageError(originalMessages.Length, fragments.Length);
+
+                messages[messageIndex] = string.Join("\n\n", fragments, fragmentOffset, fragmentCount);
+                fragmentOffset += fragmentCount;
+            }
+
+            if (fragmentOffset != fragments.Length)
+                throw CreateAmbiguousMessageError(originalMessages.Length, fragments.Length);
+            return messages;
+        }
+
+        private static InvalidDataException CreateAmbiguousMessageError(int expectedCount, int foundCount)
+        {
+            return new InvalidDataException(
+                "Message boundaries are ambiguous: expected " + expectedCount +
+                " QGM messages but found " + foundCount +
+                " text sections. Keep the blank-line paragraph structure unchanged when editing.");
+        }
+
+        private static string NormalizeNewLines(string text)
+        {
+            return (text ?? string.Empty).Replace("\r\n", "\n").Replace('\r', '\n');
+        }
+
+        private static string[] DecodeMessageBlocks(byte[] originalData, List<MessageBlock> blocks)
+        {
+            string[] messages = new string[blocks.Count];
+            byte[] singleBlockHeader = new byte[16];
+            Buffer.BlockCopy(originalData, 0, singleBlockHeader, 0, singleBlockHeader.Length);
+            Buffer.BlockCopy(BitConverter.GetBytes(1), 0, singleBlockHeader, 8, 4);
+
+            for (int i = 0; i < blocks.Count; i++)
+            {
+                MessageBlock block = blocks[i];
+                int blockLength = block.EndOffset - block.Offset;
+                byte[] oneBlockFile = new byte[singleBlockHeader.Length + blockLength];
+                Buffer.BlockCopy(singleBlockHeader, 0, oneBlockFile, 0, singleBlockHeader.Length);
+                Buffer.BlockCopy(originalData, block.Offset, oneBlockFile, singleBlockHeader.Length, blockLength);
+
+                string decoded = DecodeMessageData(oneBlockFile);
+                string delimiter = Environment.NewLine + Environment.NewLine;
+                if (decoded.EndsWith(delimiter, StringComparison.Ordinal))
+                    decoded = decoded.Substring(0, decoded.Length - delimiter.Length);
+                messages[i] = decoded.Replace("\r\n", "\n").Replace('\r', '\n');
+            }
+            return messages;
+        }
+
+        private static byte[] EncodePlainText(string text)
+        {
+            byte[] bytes = new byte[text.Length];
+            for (int i = 0; i < text.Length; i++)
+            {
+                if (text[i] > byte.MaxValue)
+                    throw new InvalidDataException(
+                        "The edited message contains a character that cannot be represented by the QGM 8-bit text encoding.");
+                bytes[i] = (byte)text[i];
+            }
+            return bytes;
+        }
+
+        private static int GetAudioPrefixLength(byte[] data, int offset, int length)
+        {
+            int prefixLength = 0;
+            while (prefixLength + 1 < length &&
+                data[offset + prefixLength] == 0x41 &&
+                data[offset + prefixLength + 1] == 0x30)
+            {
+                prefixLength += 13;
+                if (prefixLength > length)
+                    throw new InvalidDataException("A QGM audio identifier is truncated.");
+            }
+            return prefixLength;
+        }
+
+        private static void ReadMetadata(string metadataPath, out byte[] originalData, out string[] messages)
+        {
+            using (FileStream stream = new FileStream(metadataPath, FileMode.Open, FileAccess.Read))
+            using (BinaryReader reader = new BinaryReader(stream, Encoding.UTF8))
+            {
+                byte[] magic = reader.ReadBytes(4);
+                if (magic.Length != 4 || magic[0] != 'Q' || magic[1] != 'G' ||
+                    magic[2] != 'M' || magic[3] != 'M' || reader.ReadInt32() != 1)
+                    throw new InvalidDataException("The QGM sidecar is missing or has an unsupported format.");
+
+                int originalLength = reader.ReadInt32();
+                if (originalLength < 16 || originalLength > stream.Length - stream.Position)
+                    throw new InvalidDataException("The QGM sidecar contains an invalid original file.");
+                originalData = reader.ReadBytes(originalLength);
+                int messageCount = reader.ReadInt32();
+                if (messageCount < 1 || messageCount > 100000)
+                    throw new InvalidDataException("The QGM sidecar contains an invalid message count.");
+
+                messages = new string[messageCount];
+                for (int i = 0; i < messageCount; i++)
+                    messages[i] = reader.ReadString();
+                if (stream.Position != stream.Length)
+                    throw new InvalidDataException("The QGM sidecar contains unexpected trailing data.");
+            }
         }
     }
 }

@@ -19,6 +19,16 @@ namespace QFG5Extractor.Storage.SPK
 
         public static void Extract(string spkFile, string outputFolder)
         {
+            Extract(spkFile, outputFolder, true);
+        }
+
+        public static int ExtractMissing(string spkFile, string outputFolder)
+        {
+            return Extract(spkFile, outputFolder, false);
+        }
+
+        private static int Extract(string spkFile, string outputFolder, bool overwriteExisting)
+        {
             Logger.LogInfo($"Extracting {spkFile} to {outputFolder}");
 
             if (!Directory.Exists(outputFolder))
@@ -26,6 +36,7 @@ namespace QFG5Extractor.Storage.SPK
                 Directory.CreateDirectory(outputFolder);
             }
 
+            int extractedCount = 0;
             using (FileStream fs = new FileStream(spkFile, FileMode.Open, FileAccess.Read))
             using (BinaryReader br = new BinaryReader(fs))
             {
@@ -44,17 +55,34 @@ namespace QFG5Extractor.Storage.SPK
                     SpkEntry entry = entries[i];
                     Logger.LogInfo($"File: {entry.FileName}, Offset: {entry.ActualOffset}, Size: {entry.CompressedSize}");
 
-                    // Extract the file
+                    string outPath = Path.Combine(outputFolder, ToSystemPath(entry.FileName));
+                    if (!overwriteExisting && File.Exists(outPath))
+                        continue;
+
                     fs.Seek(entry.ActualOffset, SeekOrigin.Begin);
                     byte[] data = ReadExact(br, entry.CompressedSize);
 
-                    string outPath = Path.Combine(outputFolder, ToSystemPath(entry.FileName));
                     string outDir = Path.GetDirectoryName(outPath);
                     if (!Directory.Exists(outDir)) Directory.CreateDirectory(outDir);
 
                     File.WriteAllBytes(outPath, data);
+                    extractedCount++;
                 }
             }
+            return extractedCount;
+        }
+
+        public static string FindArchiveFile(string dataFolder, string archiveFileName)
+        {
+            if (string.IsNullOrWhiteSpace(dataFolder) || !Directory.Exists(dataFolder))
+                return null;
+
+            foreach (string file in Directory.GetFiles(dataFolder, "*.*", SearchOption.TopDirectoryOnly))
+            {
+                if (string.Equals(Path.GetFileName(file), archiveFileName, StringComparison.OrdinalIgnoreCase))
+                    return file;
+            }
+            return null;
         }
 
         public static void Repack(string originalSpkFile, string modifiedFolder, string outputSpkFile)

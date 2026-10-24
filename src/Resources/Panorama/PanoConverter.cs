@@ -1,5 +1,6 @@
 using QFG5Extractor.Core;
 using System;
+using System.Collections.Generic;
 using System.Drawing;
 using System.Drawing.Imaging;
 using System.IO;
@@ -23,6 +24,65 @@ namespace QFG5Extractor.Resources.Panorama
 
     public class PanoConverter
     {
+        public static bool TryReadProjectionAngles(string imgFile, out double startAngle, out double endAngle)
+        {
+            startAngle = 0;
+            endAngle = 0;
+            if (!File.Exists(imgFile)) return false;
+
+            byte[] header = new byte[64];
+            using (FileStream stream = new FileStream(imgFile, FileMode.Open, FileAccess.Read, FileShare.Read))
+            {
+                if (stream.Length < header.Length) return false;
+                int bytesRead = 0;
+                while (bytesRead < header.Length)
+                {
+                    int count = stream.Read(header, bytesRead, header.Length - bytesRead);
+                    if (count == 0) return false;
+                    bytesRead += count;
+                }
+            }
+
+            double bigEndianStart = ReadDouble(header, 8, true);
+            double bigEndianEnd = ReadDouble(header, 16, true);
+            double littleEndianStart = ReadDouble(header, 40, false);
+            double littleEndianEnd = ReadDouble(header, 48, false);
+            if (!IsFinite(bigEndianStart) || !IsFinite(bigEndianEnd) ||
+                !IsFinite(littleEndianStart) || !IsFinite(littleEndianEnd) ||
+                !NearlyEqual(bigEndianStart, littleEndianStart) ||
+                !NearlyEqual(bigEndianEnd, littleEndianEnd))
+                return false;
+
+            double span = bigEndianEnd - bigEndianStart;
+            if (span <= 0)
+                span += 2.0 * Math.PI;
+            if (span <= 0 || span > 2.0 * Math.PI + 0.001)
+                return false;
+
+            startAngle = bigEndianStart;
+            endAngle = bigEndianStart + span;
+            return true;
+        }
+
+        private static double ReadDouble(byte[] bytes, int offset, bool bigEndian)
+        {
+            byte[] value = new byte[8];
+            for (int i = 0; i < value.Length; i++)
+                value[i] = bytes[offset + (bigEndian ? value.Length - 1 - i : i)];
+            return BitConverter.ToDouble(value, 0);
+        }
+
+        private static bool IsFinite(double value)
+        {
+            return !double.IsNaN(value) && !double.IsInfinity(value);
+        }
+
+        private static bool NearlyEqual(double left, double right)
+        {
+            return Math.Abs(left - right) <= Math.Max(0.00000001,
+                Math.Max(Math.Abs(left), Math.Abs(right)) * 0.00000001);
+        }
+
         public static void exportFromFiles(string nodFile, string imgFile, string destination)
         {
             if (!File.Exists(nodFile))
@@ -52,8 +112,14 @@ namespace QFG5Extractor.Resources.Panorama
             //palette version: 0 = demo, 4 = retail
             int paletteVersion = paletteBytes[6];
 
-            int bitmapWidth = BitConverter.ToInt16(new byte[2] { pixelBytes[32], pixelBytes[33] }, 0);
-            int bitmapHeight = BitConverter.ToInt16(new byte[2] { pixelBytes[36], pixelBytes[37] }, 0);
+            if (pixelBytes.Length < 64)
+                throw new InvalidDataException("IMG file is too small to contain its complete header.");
+
+            int bitmapWidth = BitConverter.ToInt32(pixelBytes, 32);
+            int bitmapHeight = BitConverter.ToInt32(pixelBytes, 36);
+            if (bitmapWidth <= 0 || bitmapHeight <= 0 ||
+                bitmapWidth > short.MaxValue || bitmapHeight > short.MaxValue)
+                throw new InvalidDataException("IMG file contains invalid panorama dimensions.");
 
             //unpack bits
             byte[] pixelData = unpackBits(ref bitmapWidth, ref bitmapHeight, ref pixelBytes, ref paletteVersion);
@@ -96,76 +162,56 @@ namespace QFG5Extractor.Resources.Panorama
         public static void importToFiles(string bmpFile, string originalNod, string originalImg, string outNod, string outImg)
         {
             if (!File.Exists(bmpFile)) throw new FileNotFoundException("BMP file not found.", bmpFile);
+            using (Bitmap bmp = new Bitmap(bmpFile))
+                importToFiles(bmp, originalNod, originalImg, outNod, outImg);
+        }
+
+        public static void importToFiles(Bitmap sourceBitmap, string originalNod, string originalImg,
+            string outNod, string outImg)
+        {
+            if (sourceBitmap == null) throw new ArgumentNullException("sourceBitmap");
             if (!File.Exists(originalNod)) throw new FileNotFoundException("Original NOD file not found.", originalNod);
             if (!File.Exists(originalImg)) throw new FileNotFoundException("Original IMG file not found.", originalImg);
 
-            using (Bitmap bmp = new Bitmap(bmpFile))
+            using (Bitmap bmp = new Bitmap(sourceBitmap))
             {
                 // Rotate back
                 bmp.RotateFlip(RotateFlipType.Rotate270FlipNone);
 
                 int width = bmp.Width;
                 int height = bmp.Height;
-                byte[] pixelData = new byte[width * height];
+                if (width > short.MaxValue || height > short.MaxValue)
+                    throw new InvalidDataException("BMP dimensions exceed the maximum supported panorama size.");
 
                 byte[] nodBytes = File.ReadAllBytes(originalNod);
-                
-                if (bmp.PixelFormat == PixelFormat.Format8bppIndexed)
-                {
-                    BitmapData data = bmp.LockBits(new Rectangle(0, 0, width, height), ImageLockMode.ReadOnly, PixelFormat.Format8bppIndexed);
-                    System.Runtime.InteropServices.Marshal.Copy(data.Scan0, pixelData, 0, pixelData.Length);
-                    bmp.UnlockBits(data);
-                }
-                else
-                {
-                    // Quantize 24-bit to original palette
-                    Color[] originalPalette = new Color[256];
-                    int pStart = Config.nodPaletteStartIndex;
-                    for (int i = 0; i < 256 && pStart + 2 < nodBytes.Length; i++)
-                    {
-                        originalPalette[i] = Color.FromArgb(nodBytes[pStart], nodBytes[pStart + 1], nodBytes[pStart + 2]);
-                        pStart += 4;
-                    }
-
-                    for (int y = 0; y < height; y++)
-                    {
-                        for (int x = 0; x < width; x++)
-                        {
-                            pixelData[y * width + x] = GetNearestColorIndex(bmp.GetPixel(x, y), originalPalette);
-                        }
-                    }
-                }
+                Color[] originalPalette = ReadNodPalette(nodBytes);
+                Color[] outputPalette;
+                byte[] pixelData = BuildPixelData(bmp, originalPalette, out outputPalette);
 
                 byte[] imgBytes = File.ReadAllBytes(originalImg);
+                if (imgBytes.Length < 64)
+                    throw new InvalidDataException("IMG file is too small to contain its header.");
 
                 int fileVersion = nodBytes[6];
 
-                // Update palette in NOD
-                ColorPalette palette = bmp.Palette;
                 int pIdx = Config.nodPaletteStartIndex;
-                for (int i = 0; i < 256 && pIdx + 2 < nodBytes.Length; i++)
+                for (int i = 0; i < outputPalette.Length; i++)
                 {
-                    nodBytes[pIdx] = palette.Entries[i].R;
-                    nodBytes[pIdx + 1] = palette.Entries[i].G;
-                    nodBytes[pIdx + 2] = palette.Entries[i].B;
+                    nodBytes[pIdx] = outputPalette[i].R;
+                    nodBytes[pIdx + 1] = outputPalette[i].G;
+                    nodBytes[pIdx + 2] = outputPalette[i].B;
                     pIdx += 4;
                 }
 
                 // Pack bits for IMG
-                byte[] packedData = packBits(pixelData, fileVersion);
+                byte[] packedData = packBits(pixelData, width, height, fileVersion);
 
                 // Create new IMG bytes
                 // The IMG file seems to have a 64-byte header (32 * 2)
                 byte[] newImg = new byte[64 + packedData.Length];
                 Array.Copy(imgBytes, 0, newImg, 0, 64);
 
-                // Update width/height in header (at offset 32 and 36)
-                byte[] wBytes = BitConverter.GetBytes((short)width);
-                byte[] hBytes = BitConverter.GetBytes((short)height);
-                newImg[32] = wBytes[0];
-                newImg[33] = wBytes[1];
-                newImg[36] = hBytes[0];
-                newImg[37] = hBytes[1];
+                WriteImageDimensions(newImg, width, height);
 
                 Array.Copy(packedData, 0, newImg, 64, packedData.Length);
 
@@ -174,51 +220,281 @@ namespace QFG5Extractor.Resources.Panorama
             }
         }
 
-        static byte[] packBits(byte[] pixelData, int fileVersion)
+        private static Color[] ReadNodPalette(byte[] nodBytes)
         {
-            MemoryStream ms = new MemoryStream();
-            int i = 0;
-            while (i < pixelData.Length)
+            const int paletteEntryCount = 256;
+            if (nodBytes.Length < Config.nodPaletteStartIndex + paletteEntryCount * 4)
+                throw new InvalidDataException("NOD file does not contain a complete 256-color palette.");
+
+            Color[] palette = new Color[paletteEntryCount];
+            int offset = Config.nodPaletteStartIndex;
+            for (int i = 0; i < palette.Length; i++, offset += 4)
+                palette[i] = Color.FromArgb(nodBytes[offset], nodBytes[offset + 1], nodBytes[offset + 2]);
+            return palette;
+        }
+
+        private static byte[] BuildPixelData(Bitmap bmp, Color[] originalPalette, out Color[] outputPalette)
+        {
+            int pixelCount = checked(bmp.Width * bmp.Height);
+            byte[] pixelData = new byte[pixelCount];
+            outputPalette = (Color[])originalPalette.Clone();
+
+            if (bmp.PixelFormat == PixelFormat.Format8bppIndexed)
             {
-                // Look for a run of identical bytes
-                int runLen = 1;
-                while (i + runLen < pixelData.Length && pixelData[i + runLen] == pixelData[i] && runLen < 127)
+                BitmapData data = bmp.LockBits(new Rectangle(0, 0, bmp.Width, bmp.Height),
+                    ImageLockMode.ReadOnly, PixelFormat.Format8bppIndexed);
+                try
                 {
-                    runLen++;
+                    for (int y = 0; y < bmp.Height; y++)
+                        System.Runtime.InteropServices.Marshal.Copy(
+                            IntPtr.Add(data.Scan0, y * data.Stride), pixelData, y * bmp.Width, bmp.Width);
+                }
+                finally
+                {
+                    bmp.UnlockBits(data);
                 }
 
-                if (runLen >= 2)
+                Color[] bitmapPalette = bmp.Palette.Entries;
+                for (int i = 0; i < outputPalette.Length && i < bitmapPalette.Length; i++)
+                    outputPalette[i] = Color.FromArgb(bitmapPalette[i].R, bitmapPalette[i].G, bitmapPalette[i].B);
+                return pixelData;
+            }
+
+            const int bucketCount = 32 * 32 * 32;
+            int[] bucketCounts = new int[bucketCount];
+            long[] redTotals = new long[bucketCount];
+            long[] greenTotals = new long[bucketCount];
+            long[] blueTotals = new long[bucketCount];
+            List<int> populatedBuckets = new List<int>();
+
+            for (int y = 0; y < bmp.Height; y++)
+            {
+                for (int x = 0; x < bmp.Width; x++)
                 {
-                    // Repeat command (1-127)
-                    ms.WriteByte((byte)runLen);
-                    byte b = (fileVersion > 0) ? pixelData[i] : (byte)(pixelData[i] + 85);
-                    ms.WriteByte(b);
-                    i += runLen;
+                    Color color = bmp.GetPixel(x, y);
+                    int bucket = ((color.R >> 3) << 10) | ((color.G >> 3) << 5) | (color.B >> 3);
+                    if (bucketCounts[bucket] == 0)
+                        populatedBuckets.Add(bucket);
+                    bucketCounts[bucket]++;
+                    redTotals[bucket] += color.R;
+                    greenTotals[bucket] += color.G;
+                    blueTotals[bucket] += color.B;
                 }
-                else
+            }
+
+            List<PaletteBox> boxes = new List<PaletteBox> {
+                new PaletteBox(populatedBuckets, bucketCounts, redTotals, greenTotals, blueTotals)
+            };
+            while (boxes.Count < 256)
+            {
+                int boxToSplit = -1;
+                int largestRange = 0;
+                for (int i = 0; i < boxes.Count; i++)
                 {
-                    // Literal command (128-255 -> 256-count pixels)
-                    // Scan lookahead for the next run
-                    int literalLen = 0;
-                    while (i + literalLen < pixelData.Length && literalLen < 128)
+                    int range = boxes[i].LargestChannelRange;
+                    if (range > largestRange && boxes[i].BucketIndexes.Count > 1)
                     {
-                        // Stop if we find a run of 2 or more
-                        if (i + literalLen + 1 < pixelData.Length && pixelData[i + literalLen] == pixelData[i + literalLen + 1])
-                            break;
-                        literalLen++;
+                        largestRange = range;
+                        boxToSplit = i;
                     }
+                }
+                if (boxToSplit < 0) break;
 
-                    if (literalLen > 0)
+                PaletteBox[] split = boxes[boxToSplit].Split(bucketCounts, redTotals, greenTotals, blueTotals);
+                boxes[boxToSplit] = split[0];
+                boxes.Add(split[1]);
+            }
+
+            Color[] palette = new Color[boxes.Count];
+            for (int i = 0; i < boxes.Count; i++)
+            {
+                palette[i] = boxes[i].AverageColor;
+                outputPalette[i] = palette[i];
+            }
+
+            byte[] bucketToPalette = new byte[bucketCount];
+            for (int bucket = 0; bucket < bucketCount; bucket++)
+                bucketToPalette[bucket] = FindNearestPaletteIndex(bucket, palette);
+
+            for (int y = 0; y < bmp.Height; y++)
+                for (int x = 0; x < bmp.Width; x++)
+                {
+                    Color color = bmp.GetPixel(x, y);
+                    int bucket = ((color.R >> 3) << 10) | ((color.G >> 3) << 5) | (color.B >> 3);
+                    pixelData[y * bmp.Width + x] = bucketToPalette[bucket];
+                }
+            return pixelData;
+        }
+
+        private static byte FindNearestPaletteIndex(int bucket, Color[] palette)
+        {
+            int red = ((bucket >> 10) & 31) * 255 / 31;
+            int green = ((bucket >> 5) & 31) * 255 / 31;
+            int blue = (bucket & 31) * 255 / 31;
+            int bestDifference = int.MaxValue;
+            byte bestIndex = 0;
+            for (int i = 0; i < palette.Length; i++)
+            {
+                int redDifference = red - palette[i].R;
+                int greenDifference = green - palette[i].G;
+                int blueDifference = blue - palette[i].B;
+                int difference = redDifference * redDifference +
+                    greenDifference * greenDifference + blueDifference * blueDifference;
+                if (difference < bestDifference)
+                {
+                    bestDifference = difference;
+                    bestIndex = (byte)i;
+                }
+            }
+            return bestIndex;
+        }
+
+        private static void WriteImageDimensions(byte[] image, int width, int height)
+        {
+            WriteBigEndianInt32(image, 0, width);
+            WriteBigEndianInt32(image, 4, height);
+            Buffer.BlockCopy(BitConverter.GetBytes(width), 0, image, 32, 4);
+            Buffer.BlockCopy(BitConverter.GetBytes(height), 0, image, 36, 4);
+        }
+
+        private static void WriteBigEndianInt32(byte[] data, int offset, int value)
+        {
+            data[offset] = (byte)(value >> 24);
+            data[offset + 1] = (byte)(value >> 16);
+            data[offset + 2] = (byte)(value >> 8);
+            data[offset + 3] = (byte)value;
+        }
+
+        private sealed class PaletteBox
+        {
+            public readonly List<int> BucketIndexes;
+            public readonly int LargestChannelRange;
+            public readonly Color AverageColor;
+
+            public PaletteBox(List<int> bucketIndexes, int[] counts,
+                long[] redTotals, long[] greenTotals, long[] blueTotals)
+            {
+                BucketIndexes = bucketIndexes;
+                int minRed = 31, maxRed = 0;
+                int minGreen = 31, maxGreen = 0;
+                int minBlue = 31, maxBlue = 0;
+                long totalCount = 0, red = 0, green = 0, blue = 0;
+
+                foreach (int bucket in bucketIndexes)
+                {
+                    int bucketRed = (bucket >> 10) & 31;
+                    int bucketGreen = (bucket >> 5) & 31;
+                    int bucketBlue = bucket & 31;
+                    minRed = Math.Min(minRed, bucketRed);
+                    maxRed = Math.Max(maxRed, bucketRed);
+                    minGreen = Math.Min(minGreen, bucketGreen);
+                    maxGreen = Math.Max(maxGreen, bucketGreen);
+                    minBlue = Math.Min(minBlue, bucketBlue);
+                    maxBlue = Math.Max(maxBlue, bucketBlue);
+                    totalCount += counts[bucket];
+                    red += redTotals[bucket];
+                    green += greenTotals[bucket];
+                    blue += blueTotals[bucket];
+                }
+
+                LargestChannelRange = Math.Max(maxRed - minRed,
+                    Math.Max(maxGreen - minGreen, maxBlue - minBlue));
+                AverageColor = Color.FromArgb(
+                    (int)((red + totalCount / 2) / totalCount),
+                    (int)((green + totalCount / 2) / totalCount),
+                    (int)((blue + totalCount / 2) / totalCount));
+            }
+
+            public PaletteBox[] Split(int[] counts, long[] redTotals, long[] greenTotals, long[] blueTotals)
+            {
+                int redRange = GetRange(BucketIndexes, 10);
+                int greenRange = GetRange(BucketIndexes, 5);
+                int blueRange = GetRange(BucketIndexes, 0);
+                int shift = redRange >= greenRange && redRange >= blueRange ? 10
+                    : greenRange >= blueRange ? 5 : 0;
+
+                BucketIndexes.Sort((left, right) =>
+                    ((left >> shift) & 31).CompareTo((right >> shift) & 31));
+
+                long total = 0;
+                foreach (int bucket in BucketIndexes) total += counts[bucket];
+                long halfway = (total + 1) / 2;
+                long accumulated = 0;
+                int splitAt = 1;
+                for (int i = 0; i < BucketIndexes.Count - 1; i++)
+                {
+                    accumulated += counts[BucketIndexes[i]];
+                    if (accumulated >= halfway)
                     {
+                        splitAt = i + 1;
+                        break;
+                    }
+                }
+
+                return new[] {
+                    new PaletteBox(BucketIndexes.GetRange(0, splitAt), counts, redTotals, greenTotals, blueTotals),
+                    new PaletteBox(BucketIndexes.GetRange(splitAt, BucketIndexes.Count - splitAt),
+                        counts, redTotals, greenTotals, blueTotals)
+                };
+            }
+
+            private static int GetRange(List<int> buckets, int shift)
+            {
+                int min = 31, max = 0;
+                foreach (int bucket in buckets)
+                {
+                    int component = (bucket >> shift) & 31;
+                    min = Math.Min(min, component);
+                    max = Math.Max(max, component);
+                }
+                return max - min;
+            }
+        }
+
+        static byte[] packBits(byte[] pixelData, int width, int height, int fileVersion)
+        {
+            if (width <= 0 || height <= 0 || checked(width * height) != pixelData.Length)
+                throw new ArgumentException("Pixel data does not match the panorama dimensions.", "pixelData");
+
+            MemoryStream ms = new MemoryStream();
+            for (int row = 0; row < height; row++)
+            {
+                int rowStart = row * width;
+                int rowEnd = rowStart + width;
+                int i = rowStart;
+                while (i < rowEnd)
+                {
+                    int runLen = 1;
+                    while (i + runLen < rowEnd && pixelData[i + runLen] == pixelData[i] && runLen < 127)
+                        runLen++;
+
+                    if (runLen >= 2)
+                    {
+                        ms.WriteByte((byte)runLen);
+                        ms.WriteByte((fileVersion > 0) ? pixelData[i] : (byte)(pixelData[i] + 85));
+                        i += runLen;
+                    }
+                    else
+                    {
+                        int literalLen = 0;
+                        while (i + literalLen < rowEnd && literalLen < 128)
+                        {
+                            if (i + literalLen + 1 < rowEnd &&
+                                pixelData[i + literalLen] == pixelData[i + literalLen + 1])
+                                break;
+                            literalLen++;
+                        }
+
                         ms.WriteByte((byte)(256 - literalLen));
                         for (int k = 0; k < literalLen; k++)
-                        {
-                            byte b = (fileVersion > 0) ? pixelData[i + k] : (byte)(pixelData[i + k] + 85);
-                            ms.WriteByte(b);
-                        }
+                            ms.WriteByte((fileVersion > 0)
+                                ? pixelData[i + k]
+                                : (byte)(pixelData[i + k] + 85));
                         i += literalLen;
                     }
                 }
+
+                ms.WriteByte(0);
             }
             return ms.ToArray();
         }
@@ -226,79 +502,54 @@ namespace QFG5Extractor.Resources.Panorama
         static byte[] unpackBits(ref int bitmapWidth, ref int bitmapHeight, ref byte[] pixelBytes, ref int fileVersion)
         {
             int i = Config.imgPixelDataStartIndex;
-            int j = 0;
-            
-            int p = 0; //pixel
-            
-            int count;
-
             byte[] pixelData = new byte[bitmapWidth * bitmapHeight];
+            int row = 0;
+            int column = 0;
 
-            //unpack bits
-            while (i < pixelBytes.Length)
+            while (row < bitmapHeight)
             {
-                count = pixelBytes[i];
-
-                if (count == 0)
+                if (column == bitmapWidth)
                 {
-                    i++;
+                    if (i < pixelBytes.Length && pixelBytes[i] == 0)
+                        i++;
+                    row++;
+                    column = 0;
+                    continue;
                 }
-                else if (count < 128)
-                {
-                    for (j = 0; j < count; j++)
-                    {
-                        pixelData[p] = (fileVersion > 0)? pixelBytes[i + 1] : (byte)(pixelBytes[i + 1] - 85);
-                        p++;
 
-                        if (p == pixelData.Length)
-                        {
-                            break;
-                        }
-                    }
-                    i += 2;
+                if (i >= pixelBytes.Length)
+                    throw new InvalidDataException("IMG pixel data ended before all panorama columns were decoded.");
+
+                sbyte count = unchecked((sbyte)pixelBytes[i++]);
+                if (count == 0)
+                    throw new InvalidDataException("IMG contains a column terminator before the column is complete.");
+
+                int runLength = Math.Abs((int)count);
+                if (column + runLength > bitmapWidth)
+                    throw new InvalidDataException("IMG RLE packet exceeds the panorama column width.");
+
+                if (count > 0)
+                {
+                    if (i >= pixelBytes.Length)
+                        throw new InvalidDataException("IMG ends inside a repeated-value RLE packet.");
+                    byte value = DecodePaletteIndex(pixelBytes[i++], fileVersion);
+                    for (int j = 0; j < runLength; j++)
+                        pixelData[row * bitmapWidth + column++] = value;
                 }
                 else
                 {
-                    count = 256 - count;
-
-                    for (j = 0; j < count; j++)
-                    {
-                        pixelData[p] = (fileVersion > 0)? pixelBytes[i + j + 1] : (byte)(pixelBytes[i + j + 1] - 85);
-                        p++;
-
-                        if (p == pixelData.Length)
-                        {
-                            break;
-                        }
-                    }
-                    i = i + j + 1;
-                }
-
-                if (p == pixelData.Length)
-                {
-                    break;
+                    if (i + runLength > pixelBytes.Length)
+                        throw new InvalidDataException("IMG ends inside a literal RLE packet.");
+                    for (int j = 0; j < runLength; j++)
+                        pixelData[row * bitmapWidth + column++] = DecodePaletteIndex(pixelBytes[i++], fileVersion);
                 }
             }
-
             return pixelData;
         }
-        private static byte GetNearestColorIndex(Color target, Color[] palette)
+
+        private static byte DecodePaletteIndex(byte value, int fileVersion)
         {
-            int minDiff = int.MaxValue;
-            byte bestIndex = 0;
-            for (int i = 0; i < palette.Length; i++)
-            {
-                int rd = target.R - palette[i].R;
-                int gd = target.G - palette[i].G;
-                int bd = target.B - palette[i].B;
-                int diff = rd * rd + gd * gd + bd * bd;
-                if (diff < minDiff)
-                {
-                    minDiff = diff;
-                    bestIndex = (byte)i;
-                }
-            }
-            return bestIndex;
+            return fileVersion > 0 ? value : (byte)(value - 85);
         }
     }
 }

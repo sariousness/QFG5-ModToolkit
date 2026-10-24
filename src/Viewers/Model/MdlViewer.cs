@@ -7,6 +7,9 @@ using System.Drawing.Imaging;
 using System.Windows.Forms;
 using System.IO;
 using System.Collections.Generic;
+using System.Diagnostics;
+using System.Runtime.InteropServices;
+using System.Text;
 using OpenTK;
 using OpenTK.Graphics.OpenGL;
 using QFG5Extractor.Viewers.Model;
@@ -16,9 +19,13 @@ namespace QFG5Extractor.Viewers.Model
 {
     public class MdlViewer : UserControl
     {
+        private const string OriginalMdlBackupSuffix = ".qfg5extractor.bak";
         private TextBox txtMDLFolder;
-        private QFG5Button btnBrowse;
         private ListBox lstMDLFiles;
+        private CheckBox chkFavoritesOnly;
+        private TextBox txtModelSearch;
+        private readonly List<MdlListItem> modelItems = new List<MdlListItem>();
+        private bool isUpdatingModelList;
         private Label lblNameTitle;
         private Label lblModelName;
         private QFG5Button btnExport;
@@ -26,13 +33,27 @@ namespace QFG5Extractor.Viewers.Model
         private QFG5Button btnToggleMode;
         private TableLayoutPanel mainLayout;
         private TextBox txtANMFolder;
-        private QFG5Button btnBrowseANM;
         private QFG5ComboBox cmbAnimations;
         private QFG5ComboBox cmbTextures;
         private QFG5Button btnRotate90;
         private QFG5Button btnRotateAxis;
         private QFG5Button btnResetRotation;
         private QFG5Button btnBuildIndex;
+        private QFG5Button btnExportMp4;
+        private readonly HashSet<string> favoriteModels = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        private readonly string favoritesFilePath = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+            "QFG5Extractor", "model-favorites.txt");
+        private Process videoProcess;
+        private string videoErrorOutput = string.Empty;
+        private bool isRecordingVideo;
+        private int videoFrameWidth;
+        private int videoFrameHeight;
+        private DateTime nextVideoFrameTime;
+        private byte[] videoRawFrame;
+        private byte[] videoTopDownFrame;
+        private string videoOutputPath;
+        private bool panMode;
         private List<string> availableAnimations = new List<string>();
         private List<string> availableTextures = new List<string>();
         private CheckBox chkAutoMultiTex;
@@ -40,7 +61,7 @@ namespace QFG5Extractor.Viewers.Model
         private OldMdlViewerLogic viewerLogic;
         private List<MeshData> currentMeshes;
         private enum RenderMode { Texture2D, Wireframe3D, Textured3D }
-        private RenderMode currentMode = RenderMode.Wireframe3D; // Quicker load default
+        private RenderMode currentMode = RenderMode.Textured3D;
         private float rotX = 0, rotY = 0;
         private float panX = 0, panY = 0;
         private int rotOffset90X = 270, rotOffset90Y = 0; // 0, 90, 180, 270 degrees
@@ -57,7 +78,7 @@ namespace QFG5Extractor.Viewers.Model
         private int fallbackTextureId = -1;
         private float meshScale = 1.0f; 
         private QFG5Extractor.Resources.Model.Vector3 meshCenter = new QFG5Extractor.Resources.Model.Vector3(0, 0, 0); // Moved from above
-        private bool showAxis = true;
+        private bool showAxis;
         private float zoomLevel = 1.0f; // Replaces trkZoom.Value
         private int uvRotation = 0; // 0=0deg, 1=90deg, 2=180deg, 3=270deg
 
@@ -92,21 +113,13 @@ namespace QFG5Extractor.Viewers.Model
 
             var swInitComp = System.Diagnostics.Stopwatch.StartNew();
             InitializeComponent();
+            LoadFavoriteModels();
             swInitComp.Stop();
             Logger.LogPerf($"MdlViewer InitializeComponent (with GLControl creation): {swInitComp.ElapsedMilliseconds} ms");
             
-            SharedState.OnBaseDataPathChanged += (path) => {
-                string mdlDir = Path.Combine(path, "hdnw" + Path.DirectorySeparatorChar + "mdl");
-                string anmDir = Path.Combine(path, "hdnw" + Path.DirectorySeparatorChar + "anm");
-                
-                if (Directory.Exists(mdlDir)) {
-                    txtMDLFolder.Text = mdlDir;
-                    LoadFilesInFolder(mdlDir);
-                }
-                if (Directory.Exists(anmDir)) {
-                    txtANMFolder.Text = anmDir;
-                }
-            };
+            SharedState.OnBaseDataPathChanged += UpdateGameDataFolders;
+            SharedState.OnGameDataExtracted += () => UpdateGameDataFolders(SharedState.BaseDataPath);
+            UpdateGameDataFolders(SharedState.BaseDataPath);
 
             spinTimer = new Timer { Interval = 33 }; // ~30 FPS for spin + ANM playback
             spinTimer.Tick += (s, e) => {
@@ -131,6 +144,8 @@ namespace QFG5Extractor.Viewers.Model
                     needsRedraw = true;
                 }
 
+                if (isRecordingVideo)
+                    needsRedraw = true;
                 if (needsRedraw && glControl != null) glControl.Invalidate();
             };
             this.VisibleChanged += (s, e) => UpdateSpinTimer();
@@ -142,6 +157,33 @@ namespace QFG5Extractor.Viewers.Model
             Logger.LogPerf($"MdlViewer constructor total: {swViewerTotal.ElapsedMilliseconds} ms");
         }
 
+        private void UpdateGameDataFolders(string path)
+        {
+            string mdlDirectory = SharedState.GetAssetDataPath("hdnw", "mdl");
+            string anmDirectory = SharedState.GetAssetDataPath("hdnw", "anm");
+            txtMDLFolder.Text = Directory.Exists(mdlDirectory) ? mdlDirectory : string.Empty;
+            txtANMFolder.Text = Directory.Exists(anmDirectory) ? anmDirectory : string.Empty;
+
+            if (!string.IsNullOrEmpty(txtMDLFolder.Text))
+                LoadFilesInFolder(txtMDLFolder.Text);
+            else
+            {
+                lstMDLFiles.Items.Clear();
+                currentMeshes = null;
+                StopAnimPlayback();
+                ClearLoadedAnimation();
+                cmbAnimations.ComboBox.Items.Clear();
+                viewportEmptyState.Visible = true;
+                if (glControl != null) glControl.Invalidate();
+            }
+
+            if (string.IsNullOrEmpty(txtANMFolder.Text))
+            {
+                cmbAnimations.ComboBox.Items.Clear();
+                ClearLoadedAnimation();
+            }
+        }
+
         private void InitializeComponent()
         {
             this.Dock = DockStyle.Fill;
@@ -150,56 +192,16 @@ namespace QFG5Extractor.Viewers.Model
             mainLayout = new TableLayoutPanel {
                 Dock = DockStyle.Fill,
                 ColumnCount = 2,
-                RowCount = 2,
+                RowCount = 1,
                 BackColor = Color.Transparent,
                 Padding = new Padding(8)
             };
             mainLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 300));
             mainLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-            mainLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 118));
             mainLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
 
-            // --- Header: Path Management ---
-            TableLayoutPanel headerTable = new TableLayoutPanel {
-                Dock = DockStyle.Fill,
-                ColumnCount = 1,
-                RowCount = 2,
-                Padding = new Padding(8, 4, 8, 4),
-                BackColor = Color.Transparent
-            };
-            headerTable.RowStyles.Add(new RowStyle(SizeType.Percent, 50f));
-            headerTable.RowStyles.Add(new RowStyle(SizeType.Percent, 50f));
-
-            // Inline path rows (TextBox themed, matching viewer style)
-            TableLayoutPanel mdlRow = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 3, RowCount = 1 };
-            mdlRow.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 82));
-            mdlRow.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-            mdlRow.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 88));
             txtMDLFolder = CreateThemedTextBox();
-            txtMDLFolder.KeyDown += TxtMDLFolder_KeyDown;
-            btnBrowse = new QFG5Button { Text = "Browse", Dock = DockStyle.Fill, Height = 30 };
-            btnBrowse.Click += BtnBrowse_Click;
-            mdlRow.Controls.Add(new Label { Text = "MDL Folder", ForeColor = QFG5Theme.ColorTextPrimary, Font = QFG5Theme.BodyBoldFont, TextAlign = ContentAlignment.MiddleLeft, Dock = DockStyle.Fill }, 0, 0);
-            mdlRow.Controls.Add(txtMDLFolder, 1, 0);
-            mdlRow.Controls.Add(btnBrowse, 2, 0);
-
-            TableLayoutPanel anmRow = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 3, RowCount = 1 };
-            anmRow.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 82));
-            anmRow.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-            anmRow.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 88));
             txtANMFolder = CreateThemedTextBox();
-            btnBrowseANM = new QFG5Button { Text = "Browse", Dock = DockStyle.Fill, Height = 30 };
-            btnBrowseANM.Click += BtnBrowseANM_Click;
-            anmRow.Controls.Add(new Label { Text = "ANM Folder", ForeColor = QFG5Theme.ColorTextPrimary, Font = QFG5Theme.BodyBoldFont, TextAlign = ContentAlignment.MiddleLeft, Dock = DockStyle.Fill }, 0, 0);
-            anmRow.Controls.Add(txtANMFolder, 1, 0);
-            anmRow.Controls.Add(btnBrowseANM, 2, 0);
-
-            headerTable.Controls.Add(mdlRow, 0, 0);
-            headerTable.Controls.Add(anmRow, 0, 1);
-            QFG5CollapsibleSection folderSection =
-                new QFG5CollapsibleSection("MODEL & ANIMATION FOLDERS", headerTable, 118);
-            mainLayout.Controls.Add(folderSection, 0, 0);
-            mainLayout.SetColumnSpan(folderSection, 2);
 
             // --- Left Panel: Sidebar ---
             QFG5PreviewFrame sidebar = new QFG5PreviewFrame { Dock = DockStyle.Fill, Padding = new Padding(5) };
@@ -241,11 +243,72 @@ namespace QFG5Extractor.Viewers.Model
                 ForeColor = QFG5Theme.ColorTextPrimary,
                 Font = QFG5Theme.BodyFont,
                 BorderStyle = BorderStyle.None,
-                IntegralHeight = false
+                IntegralHeight = false,
+                DrawMode = DrawMode.OwnerDrawFixed,
+                ItemHeight = 20
             };
             lstMDLFiles.SelectedIndexChanged += LstMDLFiles_SelectedIndexChanged;
-            listPanel.Controls.Add(lstMDLFiles);
-            listPanel.Controls.Add(listLabel);
+            lstMDLFiles.DrawItem += LstMDLFiles_DrawItem;
+            lstMDLFiles.MouseDown += LstMDLFiles_MouseDown;
+            ToolTip modelListToolTip = new ToolTip();
+            modelListToolTip.SetToolTip(lstMDLFiles,
+                "Star: toggle favorite. Circular arrow: restore the original MDL and texture from its .qfg5extractor.bak backup.");
+            chkFavoritesOnly = new CheckBox
+            {
+                Text = "Show favorites only",
+                Dock = DockStyle.Fill,
+                ForeColor = QFG5Theme.ColorTextPrimary,
+                Font = QFG5Theme.CaptionFont,
+                BackColor = Color.Transparent,
+                Margin = new Padding(2, 4, 0, 0),
+                AutoSize = false
+            };
+            chkFavoritesOnly.CheckedChanged += (s, e) => ApplyFavoriteFilter(null);
+            txtModelSearch = CreateThemedTextBox();
+            txtModelSearch.AccessibleName = "Search models";
+            txtModelSearch.AccessibleDescription = "Filter models by file name or model name.";
+            txtModelSearch.Margin = new Padding(0, 2, 0, 2);
+            txtModelSearch.TextChanged += (s, e) => ApplyFavoriteFilter(null);
+            ToolTip modelSearchToolTip = new ToolTip();
+            modelSearchToolTip.SetToolTip(txtModelSearch, "Search model file names and model names.");
+            TableLayoutPanel modelSearchLayout = new TableLayoutPanel
+            {
+                Dock = DockStyle.Fill,
+                ColumnCount = 2,
+                RowCount = 1,
+                BackColor = Color.Transparent,
+                Margin = new Padding(0)
+            };
+            modelSearchLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 55));
+            modelSearchLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100f));
+            modelSearchLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 100f));
+            modelSearchLayout.Controls.Add(new Label
+            {
+                Text = "SEARCH",
+                Dock = DockStyle.Fill,
+                ForeColor = QFG5Theme.ColorTextGold,
+                Font = QFG5Theme.CaptionFont,
+                TextAlign = ContentAlignment.MiddleLeft
+            }, 0, 0);
+            modelSearchLayout.Controls.Add(txtModelSearch, 1, 0);
+            TableLayoutPanel modelListLayout = new TableLayoutPanel
+            {
+                Dock = DockStyle.Fill,
+                ColumnCount = 1,
+                RowCount = 4,
+                BackColor = Color.Transparent,
+                Margin = new Padding(0)
+            };
+            modelListLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100f));
+            modelListLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 25));
+            modelListLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 30));
+            modelListLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 100f));
+            modelListLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 28));
+            modelListLayout.Controls.Add(listLabel, 0, 0);
+            modelListLayout.Controls.Add(modelSearchLayout, 0, 1);
+            modelListLayout.Controls.Add(lstMDLFiles, 0, 2);
+            modelListLayout.Controls.Add(chkFavoritesOnly, 0, 3);
+            listPanel.Controls.Add(modelListLayout);
 
             TableLayoutPanel animPanel = new TableLayoutPanel
             {
@@ -393,7 +456,7 @@ namespace QFG5Extractor.Viewers.Model
             sidebarLayout.Controls.Add(texPanel, 0, 2);
             sidebarLayout.Controls.Add(toolsPanel, 0, 3);
             sidebar.Controls.Add(sidebarLayout);
-            mainLayout.Controls.Add(sidebar, 0, 1);
+            mainLayout.Controls.Add(sidebar, 0, 0);
 
             // --- Right Panel: Viewport ---
             Panel viewportPanel = new Panel { Dock = DockStyle.Fill, Padding = new Padding(4, 4, 8, 4), BackColor = Color.Transparent };
@@ -409,9 +472,9 @@ namespace QFG5Extractor.Viewers.Model
             viewportLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 42));
             viewportLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 40));
             viewportLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 100f));
-            viewportLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 100));
+            viewportLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 132));
             viewportPanel.Controls.Add(viewportLayout);
-            mainLayout.Controls.Add(viewportPanel, 1, 1);
+            mainLayout.Controls.Add(viewportPanel, 1, 0);
 
             TableLayoutPanel viewHeader = new TableLayoutPanel {
                 Dock = DockStyle.Top,
@@ -439,9 +502,9 @@ namespace QFG5Extractor.Viewers.Model
                 WrapContents = false,
                 BackColor = Color.Transparent
             };
-            btnToggleMode = new QFG5Button { Text = "Wireframe3D", Width = 108, Height = 30, Margin = new Padding(4, 2, 0, 0) };
+            btnToggleMode = new QFG5Button { Text = "Textured 3D", Width = 122, Height = 30, Margin = new Padding(4, 2, 0, 0) };
             btnToggleMode.Click += BtnToggleMode_Click;
-            QFG5Button btnRecenter = new QFG5Button { Text = "Recenter", Width = 82, Height = 30, Margin = new Padding(4, 2, 0, 0) };
+            QFG5Button btnRecenter = new QFG5Button { Text = "Recenter", Width = 90, Height = 30, Margin = new Padding(4, 2, 0, 0) };
             btnRecenter.Click += (s, e) => {
                 panX = 0; panY = 0; rotX = 0; rotY = 0; zoomLevel = 1.0f;
                 glControl.Invalidate();
@@ -531,6 +594,7 @@ namespace QFG5Extractor.Viewers.Model
             glControl.MouseMove += GlControl_MouseMove;
             glControl.MouseWheel += GlControl_MouseWheel;
 
+            ToolTip tt = new ToolTip();
             FlowLayoutPanel overlayToolbar = new FlowLayoutPanel {
                 Dock = DockStyle.Top,
                 Height = 40,
@@ -542,9 +606,7 @@ namespace QFG5Extractor.Viewers.Model
             };
             overlayToolbar.Paint += (s, e) => QFG5Theme.DrawHeaderStroke(e.Graphics, overlayToolbar.ClientRectangle);
 
-            ToolTip tt = new ToolTip();
-
-            btnResetRotation = new QFG5Button { Text = "Reset", Width = 54, Height = 30, Margin = new Padding(0, 0, 4, 0) };
+            btnResetRotation = new QFG5Button { Text = "Reset", Width = 66, Height = 30, Margin = new Padding(0, 0, 4, 0) };
             tt.SetToolTip(btnResetRotation, "Reset View (Home)");
             btnResetRotation.Click += (s, e) => {
                 rotX = 0; rotY = 0; rotOffset90X = 270; rotOffset90Y = 0; uvRotation = 0;
@@ -553,27 +615,27 @@ namespace QFG5Extractor.Viewers.Model
                 if (glControl != null) glControl.Invalidate();
             };
 
-            btnRotate90 = new QFG5Button { Text = "Rotate X", Width = 64, Height = 30, Margin = new Padding(0, 0, 4, 0) };
+            btnRotate90 = new QFG5Button { Text = "Rotate X", Width = 78, Height = 30, Margin = new Padding(0, 0, 4, 0) };
             tt.SetToolTip(btnRotate90, "Rotate 90° (X Axis)");
             btnRotate90.Click += (s, e) => { rotOffset90X = (rotOffset90X + 90) % 360; if (glControl != null) glControl.Invalidate(); };
 
-            btnRotateAxis = new QFG5Button { Text = "Rotate Y", Width = 64, Height = 30, Margin = new Padding(0, 0, 4, 0) };
+            btnRotateAxis = new QFG5Button { Text = "Rotate Y", Width = 78, Height = 30, Margin = new Padding(0, 0, 4, 0) };
             tt.SetToolTip(btnRotateAxis, "Rotate 90° (Y Axis)");
             btnRotateAxis.Click += (s, e) => { rotOffset90Y = (rotOffset90Y + 90) % 360; if (glControl != null) glControl.Invalidate(); };
 
-            QFG5Button btnToggleSpinShort = new QFG5Button { Text = "Auto Spin", Width = 68, Height = 30, Margin = new Padding(0, 0, 4, 0) };
+            QFG5Button btnToggleSpinShort = new QFG5Button { Text = "Auto Spin", Width = 82, Height = 30, Margin = new Padding(0, 0, 4, 0) };
             tt.SetToolTip(btnToggleSpinShort, "Toggle Auto-Spin");
             btnToggleSpinShort.Click += (s, e) => { isSpinning = !isSpinning; UpdateSpinTimer(); };
 
-            QFG5Button btnExplodeShort = new QFG5Button { Text = "Explode", Width = 62, Height = 30, Margin = new Padding(0, 0, 4, 0) };
+            QFG5Button btnExplodeShort = new QFG5Button { Text = "Explode", Width = 74, Height = 30, Margin = new Padding(0, 0, 4, 0) };
             tt.SetToolTip(btnExplodeShort, "Toggle Exploded View");
             btnExplodeShort.Click += (s, e) => { isExploded = !isExploded; if (glControl != null) glControl.Invalidate(); };
 
-            QFG5Button btnToggleAxis = new QFG5Button { Text = "Axis", Width = 42, Height = 30, Margin = new Padding(0, 0, 4, 0) };
+            QFG5Button btnToggleAxis = new QFG5Button { Text = "Axis", Width = 56, Height = 30, Margin = new Padding(0, 0, 4, 0) };
             tt.SetToolTip(btnToggleAxis, "Toggle Coordinate Axis");
             btnToggleAxis.Click += (s, e) => { showAxis = !showAxis; if (glControl != null) glControl.Invalidate(); };
 
-            QFG5Button btnScreenshot = new QFG5Button { Text = "Shot", Width = 44, Height = 30, Margin = new Padding(0, 0, 4, 0) };
+            QFG5Button btnScreenshot = new QFG5Button { Text = "Shot", Width = 58, Height = 30, Margin = new Padding(0, 0, 4, 0) };
             tt.SetToolTip(btnScreenshot, "Save Viewport Screenshot (PNG)");
             btnScreenshot.Click += (s, e) => SaveScreenshot();
 
@@ -597,9 +659,43 @@ namespace QFG5Extractor.Viewers.Model
             glContainer.Controls.Add(viewportEmptyState);
             viewportEmptyState.BringToFront();
 
+            Panel viewportControls = new Panel
+            {
+                Size = new Size(42, 224),
+                Location = new Point(Math.Max(0, glContainer.ClientSize.Width - 44), 8),
+                Anchor = AnchorStyles.Top | AnchorStyles.Right,
+                BackColor = Color.Transparent,
+                Padding = new Padding(2)
+            };
+            string[] viewportControlNames = { "Z", "Y", "X", "+", "-", "P", "C", "G" };
+            string[] viewportToolTips =
+            {
+                "View along the Z axis", "View along the Y axis", "View along the X axis",
+                "Zoom in", "Zoom out", "Toggle pan drag mode", "Recenter view", "Toggle coordinate axes"
+            };
+            for (int i = 0; i < viewportControlNames.Length; i++)
+            {
+                string controlName = viewportControlNames[i];
+                QFG5Button controlButton = new QFG5Button
+                {
+                    Text = controlName,
+                    Font = QFG5Theme.CaptionFont,
+                    Size = new Size(36, 26),
+                    Location = new Point(2, 2 + i * 27),
+                    Margin = new Padding(0)
+                };
+                tt.SetToolTip(controlButton, viewportToolTips[i]);
+                controlButton.Click += (s, e) => HandleViewportControl(controlName);
+                viewportControls.Controls.Add(controlButton);
+            }
+            glContainer.SizeChanged += (s, e) =>
+                viewportControls.Location = new Point(Math.Max(0, glContainer.ClientSize.Width - viewportControls.Width - 5), 8);
+            glContainer.Controls.Add(viewportControls);
+            viewportControls.BringToFront();
+
             TableLayoutPanel footer = new TableLayoutPanel {
                 Dock = DockStyle.Bottom,
-                Height = 100,
+                Height = 132,
                 ColumnCount = 1,
                 RowCount = 2,
                 BackColor = Color.Transparent,
@@ -608,7 +704,7 @@ namespace QFG5Extractor.Viewers.Model
             };
             footer.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100f));
             footer.RowStyles.Add(new RowStyle(SizeType.Absolute, 28));
-            footer.RowStyles.Add(new RowStyle(SizeType.Absolute, 72));
+            footer.RowStyles.Add(new RowStyle(SizeType.Absolute, 100));
             Label lblHint = new Label {
                 Text = "Drag to orbit · Wheel to zoom · Middle-drag to pan",
                 Dock = DockStyle.Fill,
@@ -619,15 +715,16 @@ namespace QFG5Extractor.Viewers.Model
             TableLayoutPanel actionGrid = new TableLayoutPanel {
                 Dock = DockStyle.Fill,
                 ColumnCount = 2,
-                RowCount = 2,
+                RowCount = 3,
                 BackColor = Color.Transparent,
                 Margin = new Padding(0),
                 Padding = new Padding(0)
             };
             actionGrid.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50f));
             actionGrid.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50f));
-            actionGrid.RowStyles.Add(new RowStyle(SizeType.Percent, 50f));
-            actionGrid.RowStyles.Add(new RowStyle(SizeType.Percent, 50f));
+            actionGrid.RowStyles.Add(new RowStyle(SizeType.Percent, 33.33f));
+            actionGrid.RowStyles.Add(new RowStyle(SizeType.Percent, 33.33f));
+            actionGrid.RowStyles.Add(new RowStyle(SizeType.Percent, 33.34f));
 
             btnLog = new QFG5Button { Text = "Log", Height = 32, Dock = DockStyle.Fill, Margin = new Padding(4, 2, 2, 2) };
             btnLog.Click += (s, e) => Logger.OpenLogFile();
@@ -637,11 +734,15 @@ namespace QFG5Extractor.Viewers.Model
             btnExportGlb.Click += (s, e) => ExportToGlb();
             QFG5Button btnEditTexture = new QFG5Button { Text = "Edit Texture", Height = 32, Dock = DockStyle.Fill, Margin = new Padding(2, 2, 2, 2) };
             btnEditTexture.Click += BtnEditTexture_Click;
+            btnExportMp4 = new QFG5Button { Text = "Record MP4", Height = 32, Dock = DockStyle.Fill, Margin = new Padding(4, 2, 2, 2), Enabled = false };
+            btnExportMp4.Click += BtnExportMp4_Click;
 
             actionGrid.Controls.Add(btnLog, 0, 0);
             actionGrid.Controls.Add(btnExport, 1, 0);
             actionGrid.Controls.Add(btnExportGlb, 0, 1);
             actionGrid.Controls.Add(btnEditTexture, 1, 1);
+            actionGrid.Controls.Add(btnExportMp4, 0, 2);
+            actionGrid.SetColumnSpan(btnExportMp4, 2);
             footer.Controls.Add(lblHint, 0, 0);
             footer.Controls.Add(actionGrid, 0, 1);
 
@@ -692,7 +793,8 @@ namespace QFG5Extractor.Viewers.Model
             else if (currentMode == RenderMode.Wireframe3D) currentMode = RenderMode.Texture2D;
             else currentMode = RenderMode.Textured3D;
 
-            btnToggleMode.Text = currentMode.ToString();
+            btnToggleMode.Text = currentMode == RenderMode.Textured3D ? "Textured 3D" :
+                currentMode == RenderMode.Wireframe3D ? "Wireframe 3D" : "Texture 2D";
             UpdateSpinTimer();
             if(glControl != null) glControl.Invalidate();
         }
@@ -713,6 +815,7 @@ namespace QFG5Extractor.Viewers.Model
         {
             if (disposing && spinTimer != null)
             {
+                StopVideoRecording(false);
                 spinTimer.Stop();
                 spinTimer.Dispose();
                 spinTimer = null;
@@ -723,6 +826,7 @@ namespace QFG5Extractor.Viewers.Model
         private void LoadFilesInFolder(string folderPath)
         {
             lstMDLFiles.Items.Clear();
+            modelItems.Clear();
             ResetForm();
 
             if (Directory.Exists(folderPath))
@@ -743,13 +847,15 @@ namespace QFG5Extractor.Viewers.Model
                             modelName = viewerLogic.getName(f);
                         } catch { } // Ignore read errors, just fallback to None
 
-                        lstMDLFiles.Items.Add(new MdlListItem { 
+                        modelItems.Add(new MdlListItem {
                             FileName = fileName, 
-                            ModelName = modelName 
+                            ModelName = modelName,
+                            IsFavorite = favoriteModels.Contains(fileName)
                         });
                     }
 
-                    if (lstMDLFiles.Items.Count == 0)
+                    ApplyFavoriteFilter(null);
+                    if (modelItems.Count == 0)
                     {
                         MessageBox.Show("No MDL files found in " + folderPath, "Info", MessageBoxButtons.OK, MessageBoxIcon.Information);
                     }
@@ -761,63 +867,200 @@ namespace QFG5Extractor.Viewers.Model
             }
         }
 
-        private void TxtMDLFolder_KeyDown(object sender, KeyEventArgs e)
+        private void ApplyFavoriteFilter(string selectedFileName)
         {
-            if (e.KeyCode == Keys.Enter || e.KeyCode == Keys.Return)
+            if (lstMDLFiles == null) return;
+            if (selectedFileName == null && lstMDLFiles.SelectedItem is MdlListItem selected)
+                selectedFileName = selected.FileName;
+
+            string searchText = txtModelSearch == null ? string.Empty : txtModelSearch.Text.Trim();
+            lstMDLFiles.BeginUpdate();
+            isUpdatingModelList = true;
+            try
             {
-                if (Directory.Exists(txtMDLFolder.Text))
+                lstMDLFiles.Items.Clear();
+                foreach (MdlListItem item in modelItems)
                 {
-                    LoadFilesInFolder(txtMDLFolder.Text);
+                    bool matchesSearch = string.IsNullOrEmpty(searchText)
+                        || item.FileName.IndexOf(searchText, StringComparison.OrdinalIgnoreCase) >= 0
+                        || (item.ModelName ?? string.Empty).IndexOf(searchText, StringComparison.OrdinalIgnoreCase) >= 0;
+                    bool matchesFavorites = chkFavoritesOnly == null || !chkFavoritesOnly.Checked || item.IsFavorite;
+                    if (matchesSearch && matchesFavorites)
+                        lstMDLFiles.Items.Add(item);
                 }
-                else
+                if (!string.IsNullOrEmpty(selectedFileName))
                 {
-                    MessageBox.Show("Cannot find folder: " + txtMDLFolder.Text, "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
-                    Logger.Log("MDLViewer: Folder not found: " + txtMDLFolder.Text);
-                }
-            }
-        }
-
-        private void BtnBrowse_Click(object sender, EventArgs e)
-        {
-            using (FolderBrowserDialog fbd = new FolderBrowserDialog())
-            {
-                if (Directory.Exists(txtMDLFolder.Text))
-                {
-                    fbd.SelectedPath = txtMDLFolder.Text;
-                }
-
-                if (fbd.ShowDialog() == DialogResult.OK)
-                {
-                    txtMDLFolder.Text = fbd.SelectedPath;
-                    LoadFilesInFolder(fbd.SelectedPath);
-                }
-            }
-        }
-
-        private void BtnBrowseANM_Click(object sender, EventArgs e)
-        {
-            using (FolderBrowserDialog fbd = new FolderBrowserDialog())
-            {
-                if (Directory.Exists(txtANMFolder.Text))
-                {
-                    fbd.SelectedPath = txtANMFolder.Text;
-                }
-
-                if (fbd.ShowDialog() == DialogResult.OK)
-                {
-                    txtANMFolder.Text = fbd.SelectedPath;
-                    // Auto-scan if a model is already selected
-                    if (lstMDLFiles.SelectedItem is MdlListItem item)
+                    for (int i = 0; i < lstMDLFiles.Items.Count; i++)
                     {
-                        ScanAnimationsForModel(item.FileName);
+                        if (((MdlListItem)lstMDLFiles.Items[i]).FileName.Equals(selectedFileName, StringComparison.OrdinalIgnoreCase))
+                        {
+                            lstMDLFiles.SelectedIndex = i;
+                            break;
+                        }
+                    }
+                }
+            }
+            finally
+            {
+                isUpdatingModelList = false;
+                lstMDLFiles.EndUpdate();
+            }
+        }
+
+        private void LoadFavoriteModels()
+        {
+            try
+            {
+                if (!File.Exists(favoritesFilePath)) return;
+                foreach (string line in File.ReadAllLines(favoritesFilePath))
+                {
+                    if (!string.IsNullOrWhiteSpace(line))
+                        favoriteModels.Add(line.Trim());
+                }
+            }
+            catch (Exception ex)
+            {
+                Logger.LogError("MdlViewer", "Could not load favorite models: " + ex.Message);
+            }
+        }
+
+        private void SaveFavoriteModels()
+        {
+            try
+            {
+                string directory = Path.GetDirectoryName(favoritesFilePath);
+                if (!Directory.Exists(directory)) Directory.CreateDirectory(directory);
+                List<string> favorites = new List<string>(favoriteModels);
+                favorites.Sort(StringComparer.OrdinalIgnoreCase);
+                File.WriteAllLines(favoritesFilePath, favorites.ToArray());
+            }
+            catch (Exception ex)
+            {
+                Logger.LogError("MdlViewer", "Could not save favorite models: " + ex.Message);
+                MessageBox.Show("Could not save model favorites: " + ex.Message, "Model favorites",
+                    MessageBoxButtons.OK, MessageBoxIcon.Error);
+            }
+        }
+
+        private void LstMDLFiles_DrawItem(object sender, DrawItemEventArgs e)
+        {
+            if (e.Index < 0 || e.Index >= lstMDLFiles.Items.Count) return;
+            MdlListItem item = (MdlListItem)lstMDLFiles.Items[e.Index];
+            bool selected = (e.State & DrawItemState.Selected) == DrawItemState.Selected;
+            Color backColor = selected ? SystemColors.Highlight : lstMDLFiles.BackColor;
+            Color foreColor = selected ? SystemColors.HighlightText : lstMDLFiles.ForeColor;
+            using (SolidBrush background = new SolidBrush(backColor))
+                e.Graphics.FillRectangle(background, e.Bounds);
+
+            Rectangle textBounds = new Rectangle(e.Bounds.X + 3, e.Bounds.Y,
+                Math.Max(0, e.Bounds.Width - 52), e.Bounds.Height);
+            TextRenderer.DrawText(e.Graphics, item.ToString(), lstMDLFiles.Font, textBounds,
+                foreColor, TextFormatFlags.VerticalCenter | TextFormatFlags.Left |
+                TextFormatFlags.EndEllipsis | TextFormatFlags.SingleLine);
+
+            bool hasBackup = File.Exists(GetOriginalMdlBackupPath(Path.Combine(txtMDLFolder.Text, item.FileName)));
+            using (Font restoreFont = new Font("Segoe UI Symbol", 13f, FontStyle.Regular))
+            {
+                TextRenderer.DrawText(e.Graphics, "\u21bb", restoreFont,
+                    new Rectangle(e.Bounds.Right - 49, e.Bounds.Y, 22, e.Bounds.Height),
+                    hasBackup ? QFG5Theme.ColorTextPrimary : QFG5Theme.ColorTextMuted,
+                    TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter |
+                    TextFormatFlags.SingleLine);
+            }
+
+            string star = item.IsFavorite ? "\u2605" : "\u2606";
+            Color starColor = item.IsFavorite ? Color.Gold : QFG5Theme.ColorTextMuted;
+            using (Font starFont = new Font("Segoe UI Symbol", 14f, FontStyle.Regular))
+            {
+                TextRenderer.DrawText(e.Graphics, star, starFont,
+                    new Rectangle(e.Bounds.Right - 24, e.Bounds.Y, 22, e.Bounds.Height),
+                    starColor, TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter |
+                    TextFormatFlags.SingleLine);
+            }
+            e.DrawFocusRectangle();
+        }
+
+        private void LstMDLFiles_MouseDown(object sender, MouseEventArgs e)
+        {
+            if (e.Button != MouseButtons.Left || e.X < lstMDLFiles.ClientSize.Width - 52) return;
+            int index = lstMDLFiles.IndexFromPoint(e.Location);
+            if (index < 0 || index >= lstMDLFiles.Items.Count) return;
+            MdlListItem item = (MdlListItem)lstMDLFiles.Items[index];
+            if (e.X < lstMDLFiles.ClientSize.Width - 27)
+            {
+                lstMDLFiles.SelectedIndex = index;
+                RestoreOriginalMdl(item);
+                return;
+            }
+            item.IsFavorite = !item.IsFavorite;
+            if (item.IsFavorite) favoriteModels.Add(item.FileName);
+            else favoriteModels.Remove(item.FileName);
+            SaveFavoriteModels();
+            if (chkFavoritesOnly != null && chkFavoritesOnly.Checked && !item.IsFavorite)
+                ApplyFavoriteFilter(null);
+            else
+                lstMDLFiles.Invalidate(lstMDLFiles.GetItemRectangle(index));
+        }
+
+        private static string GetOriginalMdlBackupPath(string mdlPath)
+        {
+            return mdlPath + OriginalMdlBackupSuffix;
+        }
+
+        private void RestoreOriginalMdl(MdlListItem item)
+        {
+            string mdlPath = Path.Combine(txtMDLFolder.Text, item.FileName);
+            string backupPath = GetOriginalMdlBackupPath(mdlPath);
+            if (!File.Exists(backupPath))
+            {
+                MessageBox.Show("No original backup exists for this model.", "Restore Original",
+                    MessageBoxButtons.OK, MessageBoxIcon.Information);
+                return;
+            }
+
+            DialogResult confirm = MessageBox.Show(
+                "Restore " + item.FileName + " and its embedded texture from the original backup?\n\n" +
+                "This replaces the current MDL. The backup will be kept so you can restore it again.",
+                "Restore Original MDL", MessageBoxButtons.YesNo, MessageBoxIcon.Warning);
+            if (confirm != DialogResult.Yes) return;
+
+            string replacementPath = Path.Combine(Path.GetDirectoryName(mdlPath),
+                "." + Path.GetFileName(mdlPath) + ".restore-" + Guid.NewGuid().ToString("N"));
+            try
+            {
+                File.Copy(backupPath, replacementPath);
+                File.Replace(replacementPath, mdlPath, null);
+                cmbTextures.ComboBox.SelectedIndex = 0;
+                LoadMDL(mdlPath);
+                ScanAnimationsForModel(item.FileName);
+                ScanTexturesForModel(item.FileName);
+                lstMDLFiles.Invalidate(lstMDLFiles.GetItemRectangle(lstMDLFiles.SelectedIndex));
+                if (glControl != null) glControl.Invalidate();
+                MessageBox.Show("The original MDL and embedded texture have been restored.",
+                    "Restore Original", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show("Could not restore the original model: " + ex.Message,
+                    "Restore Original", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            }
+            finally
+            {
+                if (File.Exists(replacementPath))
+                {
+                    try { File.Delete(replacementPath); }
+                    catch (Exception ex)
+                    {
+                        Logger.LogError("MdlViewer restore temporary file", ex.Message);
                     }
                 }
             }
         }
 
-
         private void LstMDLFiles_SelectedIndexChanged(object sender, EventArgs e)
         {
+            if (isUpdatingModelList) return;
+
             if (lstMDLFiles.SelectedItem is MdlListItem item)
             {
                 currentMeshes = null;
@@ -1016,6 +1259,7 @@ namespace QFG5Extractor.Viewers.Model
 
                 viewportEmptyState.Visible = currentMeshes == null || currentMeshes.Count == 0;
                 btnExport.Enabled = true;
+                btnExportMp4.Enabled = true;
 
                 // Adjust the height of the control if the image is really tall
                 this.AutoScrollMinSize = new Size(0, btnExport.Bottom + 20);
@@ -1051,6 +1295,7 @@ namespace QFG5Extractor.Viewers.Model
             cmbAnimations.ComboBox.Items.Add("<No Animation>");
             cmbAnimations.ComboBox.SelectedIndex = 0;
             btnExport.Enabled = false;
+            btnExportMp4.Enabled = false;
             
             if (glControl != null) glControl.Invalidate();
         }
@@ -1063,7 +1308,14 @@ namespace QFG5Extractor.Viewers.Model
 
         private void GlControl_MouseMove(object sender, MouseEventArgs e)
         {
-            if (e.Button == MouseButtons.Left && currentMode != RenderMode.Texture2D)
+            if (e.Button == MouseButtons.Left && panMode && currentMode != RenderMode.Texture2D)
+            {
+                panX += (e.X - lastMousePos.X) * 0.05f;
+                panY -= (e.Y - lastMousePos.Y) * 0.05f;
+                lastMousePos = e.Location;
+                glControl.Invalidate();
+            }
+            else if (e.Button == MouseButtons.Left && currentMode != RenderMode.Texture2D)
             {
                 rotY += (e.X - lastMousePos.X) * 0.01f;
                 rotX += (e.Y - lastMousePos.Y) * 0.01f;
@@ -1145,6 +1397,13 @@ namespace QFG5Extractor.Viewers.Model
 
         private void GlControl_Resize(object sender, EventArgs e)
         {
+            if (isRecordingVideo &&
+                (glControl.ClientSize.Width != videoFrameWidth || glControl.ClientSize.Height != videoFrameHeight))
+            {
+                StopVideoRecording(false);
+                MessageBox.Show("Recording stopped because the viewport size changed. Start a new recording at the new size.",
+                    "MP4 recording", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            }
             SetupViewport();
         }
 
@@ -1174,6 +1433,7 @@ namespace QFG5Extractor.Viewers.Model
 
             if (currentMeshes == null || currentMeshes.Count == 0)
             {
+                CaptureVideoFrame();
                 glControl.SwapBuffers();
                 return;
             }
@@ -1211,6 +1471,7 @@ namespace QFG5Extractor.Viewers.Model
                     GL.MatrixMode(MatrixMode.Projection);
                     GL.PopMatrix();
                 }
+                CaptureVideoFrame();
                 glControl.SwapBuffers();
                 return;
             }
@@ -1400,7 +1661,231 @@ namespace QFG5Extractor.Viewers.Model
             }
 
             // GL.End(); // Removed
+            CaptureVideoFrame();
             glControl.SwapBuffers();
+        }
+
+        private void HandleViewportControl(string controlName)
+        {
+            switch (controlName)
+            {
+                case "X":
+                    rotX = 0;
+                    rotY = MathHelper.PiOver2;
+                    break;
+                case "Y":
+                    rotX = -MathHelper.PiOver2;
+                    rotY = 0;
+                    break;
+                case "Z":
+                    rotX = 0;
+                    rotY = 0;
+                    break;
+                case "+":
+                    zoomLevel = Math.Min(10.0f, zoomLevel * 1.2f);
+                    break;
+                case "-":
+                    zoomLevel = Math.Max(0.01f, zoomLevel / 1.2f);
+                    break;
+                case "P":
+                    panMode = !panMode;
+                    break;
+                case "C":
+                    panX = 0;
+                    panY = 0;
+                    rotX = 0;
+                    rotY = 0;
+                    zoomLevel = 1.0f;
+                    break;
+                case "G":
+                    showAxis = !showAxis;
+                    break;
+            }
+            if (glControl != null) glControl.Invalidate();
+        }
+
+        private void BtnExportMp4_Click(object sender, EventArgs e)
+        {
+            if (isRecordingVideo)
+            {
+                StopVideoRecording(true);
+                return;
+            }
+            if (currentMeshes == null || currentMeshes.Count == 0)
+            {
+                MessageBox.Show("Load a model before recording the viewport.", "MP4 recording",
+                    MessageBoxButtons.OK, MessageBoxIcon.Information);
+                return;
+            }
+
+            using (SaveFileDialog dialog = new SaveFileDialog
+            {
+                Filter = "MP4 video (*.mp4)|*.mp4",
+                DefaultExt = "mp4",
+                AddExtension = true,
+                FileName = Path.GetFileNameWithoutExtension(((MdlListItem)lstMDLFiles.SelectedItem).FileName) + ".mp4",
+                Title = "Record 3D Viewer to MP4"
+            })
+            {
+                if (dialog.ShowDialog() != DialogResult.OK) return;
+                StartVideoRecording(dialog.FileName);
+            }
+        }
+
+        private void StartVideoRecording(string outputPath)
+        {
+            string ffmpegPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory,
+                Environment.OSVersion.Platform == PlatformID.Win32NT ? "ffmpeg.exe" : "ffmpeg");
+            if (!File.Exists(ffmpegPath))
+                ffmpegPath = "ffmpeg";
+
+            int width = glControl.ClientSize.Width;
+            int height = glControl.ClientSize.Height;
+            if (width < 2 || height < 2)
+                throw new InvalidOperationException("The 3D viewport is too small to record.");
+            videoFrameWidth = width;
+            videoFrameHeight = height;
+            videoRawFrame = new byte[width * height * 3];
+            videoTopDownFrame = new byte[videoRawFrame.Length];
+            videoOutputPath = outputPath;
+
+            string arguments = string.Format(
+                "-y -f rawvideo -pixel_format rgb24 -video_size {0}x{1} -framerate 30 -i - -an -c:v mpeg4 -q:v 3 -pix_fmt yuv420p -vf \"scale=trunc(iw/2)*2:trunc(ih/2)*2\" -movflags +faststart \"{2}\"",
+                width, height, outputPath.Replace("\"", "\\\""));
+            ProcessStartInfo startInfo = new ProcessStartInfo
+            {
+                FileName = ffmpegPath,
+                Arguments = arguments,
+                UseShellExecute = false,
+                RedirectStandardInput = true,
+                RedirectStandardError = true,
+                CreateNoWindow = true
+            };
+
+            try
+            {
+                videoErrorOutput = string.Empty;
+                videoProcess = new Process { StartInfo = startInfo, EnableRaisingEvents = true };
+                videoProcess.ErrorDataReceived += (s, e) =>
+                {
+                    if (e.Data == null) return;
+                    lock (videoErrorLock) videoErrorOutput += e.Data + Environment.NewLine;
+                };
+                videoProcess.Start();
+                videoProcess.BeginErrorReadLine();
+                isRecordingVideo = true;
+                nextVideoFrameTime = DateTime.UtcNow;
+                btnExportMp4.Text = "Stop Recording";
+                spinTimer.Start();
+                if (glControl != null) glControl.Invalidate();
+            }
+            catch (Exception ex)
+            {
+                if (videoProcess != null)
+                {
+                    videoProcess.Dispose();
+                    videoProcess = null;
+                }
+                MessageBox.Show(
+                    "Could not start MP4 recording. Install FFmpeg and make sure it is on PATH, or place ffmpeg beside the application.\n\n" + ex.Message,
+                    "MP4 recording", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                Logger.LogError("MdlViewer", "Could not start FFmpeg: " + ex.Message);
+            }
+        }
+
+        private readonly object videoErrorLock = new object();
+
+        private void CaptureVideoFrame()
+        {
+            if (!isRecordingVideo || videoProcess == null) return;
+            if (videoProcess.HasExited)
+            {
+                string error;
+                lock (videoErrorLock) error = videoErrorOutput;
+                StopVideoRecording(false);
+                MessageBox.Show("FFmpeg stopped unexpectedly. The MP4 recording was not completed.\n\n" + error,
+                    "MP4 recording", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                return;
+            }
+            if (DateTime.UtcNow < nextVideoFrameTime) return;
+            nextVideoFrameTime = DateTime.UtcNow.AddMilliseconds(1000.0 / 30.0);
+            int width = glControl.ClientSize.Width;
+            int height = glControl.ClientSize.Height;
+            if (width <= 0 || height <= 0) return;
+
+            GCHandle pinnedPixels = GCHandle.Alloc(videoRawFrame, GCHandleType.Pinned);
+            try
+            {
+                GL.PixelStore(PixelStoreParameter.PackAlignment, 1);
+                GL.ReadPixels(0, 0, width, height, OpenTK.Graphics.OpenGL.PixelFormat.Rgb,
+                    PixelType.UnsignedByte, pinnedPixels.AddrOfPinnedObject());
+                int rowLength = width * 3;
+                for (int row = 0; row < height; row++)
+                    System.Buffer.BlockCopy(videoRawFrame, (height - row - 1) * rowLength, videoTopDownFrame, row * rowLength, rowLength);
+                videoProcess.StandardInput.BaseStream.Write(videoTopDownFrame, 0, videoTopDownFrame.Length);
+            }
+            catch (Exception ex)
+            {
+                Logger.LogError("MdlViewer", "MP4 frame capture failed: " + ex.Message);
+                StopVideoRecording(false);
+                MessageBox.Show("MP4 recording stopped because a viewport frame could not be written.\n\n" + ex.Message,
+                    "MP4 recording", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            }
+            finally
+            {
+                GL.PixelStore(PixelStoreParameter.PackAlignment, 4);
+                pinnedPixels.Free();
+            }
+        }
+
+        private void StopVideoRecording(bool showResult)
+        {
+            if (!isRecordingVideo && videoProcess == null) return;
+            isRecordingVideo = false;
+            if (spinTimer != null) UpdateSpinTimer();
+            Process process = videoProcess;
+            videoProcess = null;
+            try
+            {
+                if (process != null)
+                {
+                    process.StandardInput.Close();
+                    if (!process.WaitForExit(30000))
+                    {
+                        process.Kill();
+                        throw new TimeoutException("FFmpeg did not finish writing the MP4 within 30 seconds.");
+                    }
+                    process.WaitForExit();
+                    if (process.ExitCode != 0)
+                    {
+                        string details;
+                        lock (videoErrorLock) details = videoErrorOutput;
+                        throw new InvalidOperationException("FFmpeg exited with code " + process.ExitCode + ". " + details);
+                    }
+                }
+                if (showResult)
+                    MessageBox.Show("MP4 recording saved successfully:\n" + videoOutputPath, "MP4 recording",
+                        MessageBoxButtons.OK, MessageBoxIcon.Information);
+            }
+            catch (Exception ex)
+            {
+                Logger.LogError("MdlViewer", "MP4 recording failed: " + ex.Message);
+                if (showResult)
+                    MessageBox.Show("Could not finish MP4 recording.\n\n" + ex.Message,
+                        "MP4 recording", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            }
+            finally
+            {
+                if (process != null) process.Dispose();
+                videoRawFrame = null;
+                videoTopDownFrame = null;
+                videoOutputPath = null;
+                if (btnExportMp4 != null)
+                {
+                    btnExportMp4.Text = "Record MP4";
+                    btnExportMp4.Enabled = currentMeshes != null && currentMeshes.Count > 0;
+                }
+            }
         }
 
         private void BtnExport_Click(object sender, EventArgs e)
@@ -1566,26 +2051,6 @@ namespace QFG5Extractor.Viewers.Model
             UpdateAnimFrameLabel();
         }
 
-        private static Matrix4 ReadAnmBoneMatrix(BinaryReader br)
-        {
-            float tx = br.ReadSingle();
-            float ty = br.ReadSingle();
-            float tz = br.ReadSingle();
-
-            float m11 = br.ReadSingle(); float m12 = br.ReadSingle(); float m13 = br.ReadSingle();
-            float m21 = br.ReadSingle(); float m22 = br.ReadSingle(); float m23 = br.ReadSingle();
-            float m31 = br.ReadSingle(); float m32 = br.ReadSingle(); float m33 = br.ReadSingle();
-
-            Matrix4 mat = new Matrix4(
-                m11, m21, m31, 0,
-                m12, m22, m32, 0,
-                m13, m23, m33, 0,
-                tx,  ty,  tz,  1
-            );
-            br.BaseStream.Seek(8, SeekOrigin.Current); // Skip 2 ints
-            return mat;
-        }
-
         private void ApplyAnimation(string filePath)
         {
             if (currentMeshes == null || !File.Exists(filePath)) return;
@@ -1594,42 +2059,12 @@ namespace QFG5Extractor.Viewers.Model
 
             try
             {
-                using (BinaryReader br = new BinaryReader(File.Open(filePath, FileMode.Open, FileAccess.Read)))
-                {
-                    br.BaseStream.Seek(0x18, SeekOrigin.Begin);
-                    int numBones = br.ReadInt32();
-                    int numFrames = br.ReadInt32();
-
-                    if (numBones != currentMeshes.Count)
-                    {
-                        Logger.Log($"Warning: Bone mismatch in {Path.GetFileName(filePath)}. ANM has {numBones}, MDL has {currentMeshes.Count}.");
-                        ClearLoadedAnimation();
-                        return;
-                    }
-
-                    if (numFrames <= 0)
-                    {
-                        Logger.Log($"Warning: ANM {Path.GetFileName(filePath)} has no frames.");
-                        ClearLoadedAnimation();
-                        return;
-                    }
-
-                    br.BaseStream.Seek(0x2C, SeekOrigin.Begin);
-
-                    loadedAnimationFrames = new Matrix4[numFrames][];
-                    for (int f = 0; f < numFrames; f++)
-                    {
-                        loadedAnimationFrames[f] = new Matrix4[numBones];
-                        for (int b = 0; b < numBones; b++)
-                            loadedAnimationFrames[f][b] = ReadAnmBoneMatrix(br);
-                    }
-
-                    currentAnimFrame = 0;
-                    loadedAnmName = Path.GetFileName(filePath);
-                    ApplyCurrentAnimFrame(recenter: true);
-                    DumpSkeletonDiagnostics(loadedAnmName);
-                    if (glControl != null) glControl.Invalidate();
-                }
+                loadedAnimationFrames = AnmAnimationLoader.LoadFrames(filePath, currentMeshes.Count);
+                currentAnimFrame = 0;
+                loadedAnmName = Path.GetFileName(filePath);
+                ApplyCurrentAnimFrame(recenter: true);
+                DumpSkeletonDiagnostics(loadedAnmName);
+                if (glControl != null) glControl.Invalidate();
             }
             catch (Exception ex)
             {
@@ -1885,12 +2320,10 @@ namespace QFG5Extractor.Viewers.Model
 
         private void BtnEditTexture_Click(object sender, EventArgs e)
         {
-            if (currentBitmaps == null || currentBitmaps.Count == 0) return;
-            
             Bitmap currentBmp = null;
-            if (cmbTextures.ComboBox.SelectedIndex > 0 && (cmbTextures.ComboBox.SelectedIndex - 1) < currentBitmaps.Count) {
+            if (currentBitmaps != null && cmbTextures.ComboBox.SelectedIndex > 0 && (cmbTextures.ComboBox.SelectedIndex - 1) < currentBitmaps.Count) {
                  currentBmp = currentBitmaps[cmbTextures.ComboBox.SelectedIndex - 1];
-            } else if (currentBitmaps.Count > 0) {
+            } else if (currentBitmaps != null && currentBitmaps.Count > 0) {
                  currentBmp = currentBitmaps[0];
             }
 
@@ -1913,6 +2346,7 @@ namespace QFG5Extractor.Viewers.Model
         {
             public string FileName { get; set; }
             public string ModelName { get; set; }
+            public bool IsFavorite { get; set; }
 
             public override string ToString()
             {

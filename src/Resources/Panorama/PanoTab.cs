@@ -1,6 +1,7 @@
 using QFG5Extractor.Core;
 using QFG5Extractor.Core.UI;
 using QFG5Extractor.Resources.Panorama;
+using QFG5Extractor.Storage.SPK;
 using System;
 using System.Collections.Generic;
 using System.Drawing;
@@ -11,11 +12,9 @@ namespace QFG5Extractor.Resources.Panorama
 {
     public class PanoTab : UserControl
     {
-        private QFG5PathField nodFolderTextBox;
-        private QFG5PathField imgFolderTextBox;
-        private QFG5PathField outputFolderTextBox;
         private QFG5Button runButton;
         private QFG5Button injectButton;
+        private QFG5Button editButton;
         private Label statusLabel;
         private Label currentFileLabel;
         private Label lblFileCount;
@@ -28,25 +27,6 @@ namespace QFG5Extractor.Resources.Panorama
             Dock = DockStyle.Fill;
             this.BackColor = Color.Transparent;
             InitializeComponent();
-
-            SharedState.OnBaseDataPathChanged += UpdatePaths;
-            if (!string.IsNullOrEmpty(SharedState.BaseDataPath))
-            {
-                UpdatePaths(SharedState.BaseDataPath);
-            }
-            SharedState.OnExtractionPathChanged += (p) => { outputFolderTextBox.Text = p; };
-            if (!string.IsNullOrEmpty(SharedState.ExtractionPath)) outputFolderTextBox.Text = SharedState.ExtractionPath;
-        }
-
-        private void UpdatePaths(string path)
-        {
-            string nodDir = Path.Combine(path, "cdn" + Path.DirectorySeparatorChar + "NOD");
-            if (!Directory.Exists(nodDir)) nodDir = Path.Combine(path, "cdn" + Path.DirectorySeparatorChar + "nod");
-            string imgDir = Path.Combine(path, "cdn" + Path.DirectorySeparatorChar + "IMG");
-            if (!Directory.Exists(imgDir)) imgDir = Path.Combine(path, "cdn" + Path.DirectorySeparatorChar + "img");
-
-            if (Directory.Exists(nodDir)) nodFolderTextBox.Text = nodDir;
-            if (Directory.Exists(imgDir)) imgFolderTextBox.Text = imgDir;
         }
 
         private void InitializeComponent()
@@ -57,88 +37,11 @@ namespace QFG5Extractor.Resources.Panorama
             {
                 Dock = DockStyle.Fill,
                 ColumnCount = 1,
-                RowCount = 3,
+                RowCount = 2,
                 Padding = new Padding(QFG5Layout.ContentPadding)
             };
-            mainLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 146)); // Collapsible folder paths
             mainLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 100f)); // Center: Split view (List + Preview)
             mainLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 62));  // Bottom: 2-Row Footer
-
-            // --- Top Section: 3 Symmetric Path Rows (NOD, IMG, Output) ---
-            QFG5TableLayoutPanel topTable = new QFG5TableLayoutPanel
-            {
-                Dock = DockStyle.Fill,
-                ColumnCount = 3,
-                RowCount = 3,
-                Margin = new Padding(0, 0, 0, 8)
-            };
-            topTable.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, QFG5Layout.LabelWidth)); // 100px
-            topTable.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100f));                    // Stretch
-            topTable.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 95));                    // Browse button width (95px)
-
-            topTable.RowStyles.Add(new RowStyle(SizeType.Absolute, 36)); // Row 0: NOD Path
-            topTable.RowStyles.Add(new RowStyle(SizeType.Absolute, 36)); // Row 1: IMG Path
-            topTable.RowStyles.Add(new RowStyle(SizeType.Absolute, 36)); // Row 2: Output Path
-
-            // Row 0: NOD Path
-            Label lblNod = new Label
-            {
-                Text = "NOD Path:",
-                ForeColor = QFG5Theme.ColorTextPrimary,
-                Font = QFG5Theme.BodyBoldFont,
-                Dock = DockStyle.Fill,
-                TextAlign = ContentAlignment.MiddleLeft
-            };
-            nodFolderTextBox = new QFG5PathField { Dock = DockStyle.Fill, Height = 30, Margin = new Padding(0, 3, 4, 3), TabIndex = 0, AccessibleName = "NOD Path" };
-            toolTip.SetToolTip(nodFolderTextBox, "Source directory containing Quest for Glory V .NOD panorama files (cdn/NOD)");
-
-            QFG5Button btnBrowseNod = new QFG5Button { Text = "Browse", Dock = DockStyle.Fill, Height = 30, Margin = new Padding(0, 3, 0, 3), TabIndex = 1 };
-            btnBrowseNod.Click += (s, e) => nodFolderTextBox.Text = BrowseFolder(nodFolderTextBox.Text);
-            toolTip.SetToolTip(btnBrowseNod, "Browse for folder containing .NOD files");
-
-            topTable.Controls.Add(lblNod, 0, 0);
-            topTable.Controls.Add(nodFolderTextBox, 1, 0);
-            topTable.Controls.Add(btnBrowseNod, 2, 0);
-
-            // Row 1: IMG Path
-            Label lblImg = new Label
-            {
-                Text = "IMG Path:",
-                ForeColor = QFG5Theme.ColorTextPrimary,
-                Font = QFG5Theme.BodyBoldFont,
-                Dock = DockStyle.Fill,
-                TextAlign = ContentAlignment.MiddleLeft
-            };
-            imgFolderTextBox = new QFG5PathField { Dock = DockStyle.Fill, Height = 30, Margin = new Padding(0, 3, 4, 3), TabIndex = 2, AccessibleName = "IMG Path" };
-            toolTip.SetToolTip(imgFolderTextBox, "Source directory containing matching .IMG panorama files (cdn/IMG)");
-
-            QFG5Button btnBrowseImg = new QFG5Button { Text = "Browse", Dock = DockStyle.Fill, Height = 30, Margin = new Padding(0, 3, 0, 3), TabIndex = 3 };
-            btnBrowseImg.Click += (s, e) => imgFolderTextBox.Text = BrowseFolder(imgFolderTextBox.Text);
-            toolTip.SetToolTip(btnBrowseImg, "Browse for folder containing matching .IMG files");
-
-            topTable.Controls.Add(lblImg, 0, 1);
-            topTable.Controls.Add(imgFolderTextBox, 1, 1);
-            topTable.Controls.Add(btnBrowseImg, 2, 1);
-
-            // Row 2: Output Path
-            Label lblOutput = new Label
-            {
-                Text = "Output Path:",
-                ForeColor = QFG5Theme.ColorTextPrimary,
-                Font = QFG5Theme.BodyBoldFont,
-                Dock = DockStyle.Fill,
-                TextAlign = ContentAlignment.MiddleLeft
-            };
-            outputFolderTextBox = new QFG5PathField { Dock = DockStyle.Fill, Height = 30, Margin = new Padding(0, 3, 4, 3), TabIndex = 4, AccessibleName = "Output Path" };
-            toolTip.SetToolTip(outputFolderTextBox, "Destination folder for extracted panorama .BMP files or injected files");
-
-            QFG5Button outBrowse = new QFG5Button { Text = "Browse", Dock = DockStyle.Fill, Height = 30, Margin = new Padding(0, 3, 0, 3), TabIndex = 5 };
-            outBrowse.Click += (s, e) => outputFolderTextBox.Text = BrowseFolder(outputFolderTextBox.Text);
-            toolTip.SetToolTip(outBrowse, "Browse for destination output directory");
-
-            topTable.Controls.Add(lblOutput, 0, 2);
-            topTable.Controls.Add(outputFolderTextBox, 1, 2);
-            topTable.Controls.Add(outBrowse, 2, 2);
 
             // --- Center Section: Split View (Extracted Panoramas List + Preview) ---
             SplitContainer split = new SplitContainer
@@ -178,6 +81,7 @@ namespace QFG5Extractor.Resources.Panorama
                 TabIndex = 6
             };
             convertedListBox.SelectedIndexChanged += ConvertedListBox_SelectedIndexChanged;
+            SharedState.OnPanoFilesChanged += PanoFilesChanged;
             toolTip.SetToolTip(convertedListBox, "List of extracted panorama .BMP images. Click to preview.");
 
             listContent.Controls.Add(convertedListBox);
@@ -212,7 +116,7 @@ namespace QFG5Extractor.Resources.Panorama
             {
                 if (previewPictureBox.Image == null)
                 {
-                    string emptyMsg = "No panorama preview selected.\n\nRun extraction and select a .BMP file from the list to preview.";
+                    string emptyMsg = "No panorama preview selected.\n\nPanoramas load automatically when this tab opens.";
                     using (var sf = new StringFormat { Alignment = StringAlignment.Center, LineAlignment = StringAlignment.Center })
                     using (var brush = new SolidBrush(QFG5Theme.ColorTextMuted))
                     {
@@ -236,7 +140,7 @@ namespace QFG5Extractor.Resources.Panorama
                 Margin = new Padding(0, 4, 0, 0)
             };
             footerTable.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100f)); // Left status/file info
-            footerTable.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 260));  // Right progress / action buttons
+            footerTable.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 330));  // Right progress / action buttons
 
             footerTable.RowStyles.Add(new RowStyle(SizeType.Absolute, 26)); // Row 0: Status + Progress
             footerTable.RowStyles.Add(new RowStyle(SizeType.Absolute, 32)); // Row 1: File Info + Actions
@@ -244,7 +148,7 @@ namespace QFG5Extractor.Resources.Panorama
             // Row 0: High-Level Status + Progress Bar
             statusLabel = new Label
             {
-                Text = "Ready — Click 'Run Extraction' to export panoramas.",
+                Text = "Panorama files load automatically when this tab opens.",
                 ForeColor = QFG5Theme.ColorGold,
                 Font = QFG5Theme.BodyBoldFont,
                 Dock = DockStyle.Fill,
@@ -296,63 +200,97 @@ namespace QFG5Extractor.Resources.Panorama
             QFG5TableLayoutPanel actionButtonsPanel = new QFG5TableLayoutPanel
             {
                 Dock = DockStyle.Fill,
-                ColumnCount = 2,
+                ColumnCount = 3,
                 RowCount = 1,
                 Margin = new Padding(0)
             };
-            actionButtonsPanel.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 46f)); // Inject BMP
-            actionButtonsPanel.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 54f)); // Run Extraction
+            actionButtonsPanel.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 33f)); // Edit BMP
+            actionButtonsPanel.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 33f)); // Inject BMP
+            actionButtonsPanel.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 34f)); // Run Extraction
 
             injectButton = new QFG5Button { Text = "Inject BMP", Dock = DockStyle.Fill, Height = 30, Margin = new Padding(0, 1, 4, 1), TabIndex = 7 };
             injectButton.Click += InjectButtonClick;
             toolTip.SetToolTip(injectButton, "Inject an edited .BMP image back into .NOD and .IMG panorama files");
 
-            runButton = new QFG5Button { Text = "Run Extraction", Dock = DockStyle.Fill, Height = 30, Margin = new Padding(2, 1, 0, 1), TabIndex = 8 };
-            runButton.Click += RunButtonClick;
-            toolTip.SetToolTip(runButton, "Extract all .NOD and .IMG panorama pairs into .BMP images");
+            editButton = new QFG5Button { Text = "Edit Selected", Dock = DockStyle.Fill, Height = 30, Margin = new Padding(0, 1, 4, 1), TabIndex = 7 };
+            editButton.Enabled = false;
+            editButton.Click += EditSelectedButtonClick;
+            toolTip.SetToolTip(editButton, "Open the selected panorama bitmap in the Texture Editor.");
 
-            actionButtonsPanel.Controls.Add(injectButton, 0, 0);
-            actionButtonsPanel.Controls.Add(runButton, 1, 0);
+            runButton = new QFG5Button { Text = "Extract", Dock = DockStyle.Fill, Height = 30, Margin = new Padding(2, 1, 0, 1), TabIndex = 8 };
+            runButton.Click += RunButtonClick;
+            toolTip.SetToolTip(runButton, "Re-extract all .NOD and .IMG panorama pairs into .BMP images");
+
+            actionButtonsPanel.Controls.Add(editButton, 0, 0);
+            actionButtonsPanel.Controls.Add(injectButton, 1, 0);
+            actionButtonsPanel.Controls.Add(runButton, 2, 0);
 
             footerTable.Controls.Add(fileInfoPanel, 0, 1);
             footerTable.Controls.Add(actionButtonsPanel, 1, 1);
 
             // Assemble main layout
-            mainLayout.Controls.Add(new QFG5CollapsibleSection("PANORAMA FOLDERS", topTable, 146), 0, 0);
-            mainLayout.Controls.Add(split, 0, 1);
-            mainLayout.Controls.Add(footerTable, 0, 2);
+            mainLayout.Controls.Add(split, 0, 0);
+            mainLayout.Controls.Add(footerTable, 0, 1);
 
             this.Controls.Add(mainLayout);
         }
 
-        private static string BrowseFolder(string currentPath)
+        public void AutoLoad()
         {
-            using (FolderBrowserDialog dialog = new FolderBrowserDialog())
-            {
-                if (!string.IsNullOrEmpty(currentPath) && Directory.Exists(currentPath)) dialog.SelectedPath = currentPath;
-                if (dialog.ShowDialog() == DialogResult.OK) return dialog.SelectedPath;
-            }
-            return currentPath;
+            RunExtraction(true);
         }
 
         private void RunButtonClick(object sender, EventArgs e)
         {
-            string nodFolder = nodFolderTextBox.Text.Trim();
-            string imgFolder = imgFolderTextBox.Text.Trim();
-            string outputFolder = outputFolderTextBox.Text.Trim();
+            RunExtraction(false);
+        }
 
-            if (!Directory.Exists(nodFolder) || !Directory.Exists(imgFolder) || !Directory.Exists(outputFolder))
+        private void RunExtraction(bool automatic)
+        {
+            string nodFolder = SharedState.GetAssetDataPath("cdn", "NOD");
+            string imgFolder = SharedState.GetAssetDataPath("cdn", "IMG");
+            string outputFolder = SharedState.GetModsPath("cdn", "NOD");
+
+            if (!DirectoryHasFiles(nodFolder, ".nod") || !DirectoryHasFiles(imgFolder, ".img"))
             {
-                MessageBox.Show("Please ensure all paths exist.", "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                try
+                {
+                    AssetArchiveHelper.EnsureExtracted("CDN.SPK");
+                    if (!DirectoryHasFiles(nodFolder, ".nod"))
+                        nodFolder = SharedState.GetModsPath("cdn", "NOD");
+                    if (!DirectoryHasFiles(imgFolder, ".img"))
+                        imgFolder = SharedState.GetModsPath("cdn", "IMG");
+                }
+                catch (Exception ex)
+                {
+                    SetStatus("Unable to load panorama files: " + ex.Message, Color.Firebrick);
+                    currentFileLabel.Text = "Status: Error";
+                    Logger.LogError("PanoTab", ex.Message);
+                    if (!automatic)
+                        MessageBox.Show(ex.Message, "Panorama extraction", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                    return;
+                }
+            }
+
+            if (!Directory.Exists(nodFolder) || !Directory.Exists(imgFolder))
+            {
+                SetStatus("The configured source folders are missing. Check Settings.", Color.Firebrick);
+                if (!automatic)
+                    MessageBox.Show("The Game DATA Folder must contain cdn/NOD and cdn/IMG.", "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
                 return;
             }
 
+            Directory.CreateDirectory(outputFolder);
             runButton.Enabled = false;
             injectButton.Enabled = false;
+            editButton.Enabled = false;
             ClearPreview();
-            convertedListBox.Items.Clear();
-            lblFileCount.Text = "(0 files)";
-            SetStatus("Running extraction...", Color.RoyalBlue);
+            if (automatic)
+                LoadOutputFiles(outputFolder);
+            else
+                convertedListBox.Items.Clear();
+            lblFileCount.Text = $"({convertedListBox.Items.Count} files)";
+            SetStatus(automatic ? "Loading panorama images..." : "Running extraction...", Color.RoyalBlue);
 
             int converted = 0;
             int missing = 0;
@@ -369,6 +307,8 @@ namespace QFG5Extractor.Resources.Panorama
                 {
                     SetStatus("No NOD files found in selected path.", Color.Orange);
                     currentFileLabel.Text = "Status: Idle";
+                    if (automatic && convertedListBox.Items.Count > 0)
+                        convertedListBox.SelectedIndex = 0;
                     return;
                 }
 
@@ -402,6 +342,14 @@ namespace QFG5Extractor.Resources.Panorama
                         try
                         {
                             string outFile = Path.Combine(outputFolder, baseName + ".bmp");
+                            string existingOutput = automatic ? FindOutputFile(outputFolder, baseName) : null;
+                            if (existingOutput != null)
+                            {
+                                converted++;
+                                progressBar.Value = (int)((float)(converted + missing + failed) / total * 100);
+                                continue;
+                            }
+
                             PanoConverter.exportFromFiles(nodFile, imgFile, outFile);
                             converted++;
                             string actualOutFile = outFile;
@@ -426,8 +374,11 @@ namespace QFG5Extractor.Resources.Panorama
                 Logger.LogPerf($"Pano extraction completed in {extractionWatch.ElapsedMilliseconds} ms; IMG directory enumerations: {imgDirectoryEnumerations}");
                 SetStatus($"Done. Extracted: {converted}, missing IMG: {missing}, failed: {failed}", Color.ForestGreen);
                 currentFileLabel.Text = "Status: Finished";
-                lblFileCount.Text = $"({converted} files)";
-                MessageBox.Show($"Extraction complete.\nConverted: {converted}\nMissing IMG: {missing}\nFailed: {failed}", "Pano Tab", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                lblFileCount.Text = $"({convertedListBox.Items.Count} files)";
+                if (automatic && convertedListBox.Items.Count > 0)
+                    convertedListBox.SelectedIndex = 0;
+                if (!automatic)
+                    MessageBox.Show($"Extraction complete.\nConverted: {converted}\nMissing IMG: {missing}\nFailed: {failed}", "Pano Tab", MessageBoxButtons.OK, MessageBoxIcon.Information);
             }
             catch (Exception ex)
             {
@@ -441,6 +392,96 @@ namespace QFG5Extractor.Resources.Panorama
             {
                 runButton.Enabled = true;
                 injectButton.Enabled = true;
+                SharedState.NotifyPanoFileChanged(null);
+            }
+        }
+
+        private bool DirectoryHasFiles(string folder, string extension)
+        {
+            return Directory.Exists(folder) &&
+                Array.Exists(Directory.GetFiles(folder), file =>
+                    string.Equals(Path.GetExtension(file), extension, StringComparison.OrdinalIgnoreCase));
+        }
+
+        private void LoadOutputFiles(string folder)
+        {
+            convertedListBox.Items.Clear();
+            if (!Directory.Exists(folder)) return;
+            string[] files = Directory.GetFiles(folder);
+            Array.Sort(files, StringComparer.OrdinalIgnoreCase);
+            foreach (string file in files)
+            {
+                if (string.Equals(Path.GetExtension(file), ".bmp", StringComparison.OrdinalIgnoreCase))
+                    convertedListBox.Items.Add(Path.GetFileName(file));
+            }
+            lblFileCount.Text = $"({convertedListBox.Items.Count} files)";
+        }
+
+        private string FindOutputFile(string folder, string baseName)
+        {
+            if (!Directory.Exists(folder)) return null;
+            string expectedName = baseName + ".bmp";
+            foreach (string file in Directory.GetFiles(folder))
+            {
+                if (string.Equals(Path.GetFileName(file), expectedName, StringComparison.OrdinalIgnoreCase))
+                    return file;
+            }
+            return null;
+        }
+
+        private bool TryFindOriginalFiles(string baseName, out string originalNod, out string originalImg)
+        {
+            string nodFolder = SharedState.GetAssetDataPath("cdn", "NOD");
+            string imgFolder = SharedState.GetAssetDataPath("cdn", "IMG");
+            originalNod = FindFileCaseInsensitive(nodFolder, baseName + ".nod");
+            originalImg = FindFileCaseInsensitive(imgFolder, baseName + ".img");
+
+            if (string.IsNullOrEmpty(originalNod) || string.IsNullOrEmpty(originalImg))
+            {
+                string alternateNodFolder = SharedState.GetAssetDataPath("hdn", "gra");
+                string alternateImgFolder = SharedState.GetAssetDataPath("hdn", "img");
+                if (string.IsNullOrEmpty(originalNod))
+                    originalNod = FindFileCaseInsensitive(alternateNodFolder, baseName + ".nod");
+                if (string.IsNullOrEmpty(originalImg))
+                    originalImg = FindFileCaseInsensitive(alternateImgFolder, baseName + ".img");
+            }
+            return !string.IsNullOrEmpty(originalNod) && !string.IsNullOrEmpty(originalImg);
+        }
+
+        private void EditSelectedButtonClick(object sender, EventArgs e)
+        {
+            if (convertedListBox.SelectedItem == null)
+            {
+                SetStatus("Select a panorama BMP to edit.", Color.Orange);
+                return;
+            }
+
+            string fileName = convertedListBox.SelectedItem.ToString();
+            string baseName = Path.GetFileNameWithoutExtension(fileName);
+            string bmpFile = FindOutputFile(SharedState.GetModsPath("cdn", "NOD"), baseName);
+            string originalNod;
+            string originalImg;
+            if (bmpFile == null || !TryFindOriginalFiles(baseName, out originalNod, out originalImg))
+            {
+                MessageBox.Show("Could not find the selected panorama BMP and its source NOD/IMG pair.",
+                    "Panorama Editor", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                return;
+            }
+
+            try
+            {
+                Bitmap editBitmap;
+                using (Bitmap source = new Bitmap(bmpFile))
+                    editBitmap = new Bitmap(source);
+                SharedState.RequestEditPano(editBitmap, bmpFile, originalNod, originalImg);
+                SharedState.RequestSwitchTab(6);
+            }
+            catch (Exception ex)
+            {
+                SetStatus("Could not open panorama for editing: " + ex.Message, Color.Firebrick);
+                Logger.LogError("PanoTab", "Could not open panorama for editing: " + ex.Message);
+                MessageBox.Show("Could not open panorama for editing: " + ex.Message,
+                    "Panorama Editor", MessageBoxButtons.OK, MessageBoxIcon.Error);
             }
         }
 
@@ -454,35 +495,13 @@ namespace QFG5Extractor.Resources.Panorama
             }
 
             string baseName = Path.GetFileNameWithoutExtension(bmpFile);
-            string nodFolder = nodFolderTextBox.Text.Trim();
-            string imgFolder = imgFolderTextBox.Text.Trim();
+            string nodFolder = SharedState.GetAssetDataPath("cdn", "NOD");
+            string imgFolder = SharedState.GetAssetDataPath("cdn", "IMG");
+            string originalNod;
+            string originalImg;
 
-            if (!Directory.Exists(nodFolder) || !Directory.Exists(imgFolder))
-            {
-                MessageBox.Show("Please select valid NOD and IMG folders first to find original files.", "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
-                return;
-            }
-
-            string originalNod = FindFileCaseInsensitive(nodFolder, baseName + ".nod");
-            string originalImg = FindFileCaseInsensitive(imgFolder, baseName + ".img");
-
-            if (string.IsNullOrEmpty(originalNod) || string.IsNullOrEmpty(originalImg))
-            {
-                // Try alternate locations using BaseDataPath
-                if (!string.IsNullOrEmpty(SharedState.BaseDataPath))
-                {
-                    string alternateNodFolder = Path.Combine(SharedState.BaseDataPath, "hdn" + Path.DirectorySeparatorChar + "gra");
-                    string alternateImgFolder = Path.Combine(SharedState.BaseDataPath, "hdn" + Path.DirectorySeparatorChar + "img");
-
-                    if (string.IsNullOrEmpty(originalNod) && Directory.Exists(alternateNodFolder))
-                        originalNod = FindFileCaseInsensitive(alternateNodFolder, baseName + ".nod");
-
-                    if (string.IsNullOrEmpty(originalImg) && Directory.Exists(alternateImgFolder))
-                        originalImg = FindFileCaseInsensitive(alternateImgFolder, baseName + ".img");
-                }
-            }
-
-            if (string.IsNullOrEmpty(originalNod) || string.IsNullOrEmpty(originalImg))
+            if (!Directory.Exists(nodFolder) || !Directory.Exists(imgFolder) ||
+                !TryFindOriginalFiles(baseName, out originalNod, out originalImg))
             {
                 string msg = $"Could not find matching original .nod/.img files for {baseName}.\nSearched in:\n- {nodFolder}\n- {imgFolder}";
                 if (!string.IsNullOrEmpty(SharedState.BaseDataPath)) msg += $"\n- {SharedState.BaseDataPath}/hdn/gra\n- {SharedState.BaseDataPath}/hdn/img";
@@ -490,13 +509,23 @@ namespace QFG5Extractor.Resources.Panorama
                 return;
             }
 
-            string outNod = Path.Combine(outputFolderTextBox.Text.Trim(), baseName + ".nod");
-            string outImg = Path.Combine(outputFolderTextBox.Text.Trim(), baseName + ".img");
+            string nodOutputFolder = SharedState.GetModsPath("cdn", "NOD");
+            string imgOutputFolder = SharedState.GetModsPath("cdn", "IMG");
+            Directory.CreateDirectory(nodOutputFolder);
+            Directory.CreateDirectory(imgOutputFolder);
+            string outNod = Path.Combine(nodOutputFolder, baseName + ".nod");
+            string outImg = Path.Combine(imgOutputFolder, baseName + ".img");
 
             try
             {
                 PanoConverter.importToFiles(bmpFile, originalNod, originalImg, outNod, outImg);
-                MessageBox.Show($"Successfully injected and saved to output folder:\n{baseName}.nod\n{baseName}.img", "Success", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                MessageBox.Show(
+                    $"Panorama files were written to the Mods folders:\n" +
+                    $"cdn/NOD/{baseName}.nod\ncdn/IMG/{baseName}.img\n\n" +
+                    "The game will not use these files until you repack CDN.SPK in the SPK tab " +
+                    "and install the resulting archive in the game's DATA folder.",
+                    "Panorama files ready", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                SharedState.NotifyPanoFileChanged(baseName);
             }
             catch (Exception ex)
             {
@@ -507,6 +536,7 @@ namespace QFG5Extractor.Resources.Panorama
 
         private void ConvertedListBox_SelectedIndexChanged(object sender, EventArgs e)
         {
+            editButton.Enabled = convertedListBox.SelectedItem != null;
             if (convertedListBox.SelectedItem == null)
             {
                 ClearPreview();
@@ -514,22 +544,19 @@ namespace QFG5Extractor.Resources.Panorama
             }
 
             string fileName = convertedListBox.SelectedItem.ToString();
-            string fullPath = Path.Combine(outputFolderTextBox.Text, fileName);
+            string outputFolder = SharedState.GetModsPath("cdn", "NOD");
+            string fullPath = Path.Combine(outputFolder, fileName);
 
-            if (!File.Exists(fullPath))
-            {
-                string upper = Path.Combine(outputFolderTextBox.Text, Path.GetFileNameWithoutExtension(fileName) + ".BMP");
-                string lower = Path.Combine(outputFolderTextBox.Text, Path.GetFileNameWithoutExtension(fileName) + ".bmp");
-                if (File.Exists(upper)) fullPath = upper;
-                else if (File.Exists(lower)) fullPath = lower;
-            }
+            string resolvedPath = FindOutputFile(outputFolder, Path.GetFileNameWithoutExtension(fileName));
+            if (resolvedPath != null) fullPath = resolvedPath;
 
             if (File.Exists(fullPath))
             {
                 try
                 {
                     ClearPreview();
-                    previewPictureBox.Image = Image.FromFile(fullPath);
+                    using (Bitmap source = new Bitmap(fullPath))
+                        previewPictureBox.Image = new Bitmap(source);
                     SetStatus("Previewing: " + Path.GetFileName(fullPath), QFG5Theme.ColorTextPrimary);
                 }
                 catch (Exception ex)
@@ -543,6 +570,24 @@ namespace QFG5Extractor.Resources.Panorama
                 ClearPreview();
                 SetStatus("File not found: " + fullPath, Color.Orange);
             }
+        }
+
+        private void PanoFilesChanged(string preferredBaseName)
+        {
+            string selectedFileName = string.IsNullOrEmpty(preferredBaseName)
+                ? (convertedListBox.SelectedItem == null ? null : convertedListBox.SelectedItem.ToString())
+                : preferredBaseName + ".bmp";
+            LoadOutputFiles(SharedState.GetModsPath("cdn", "NOD"));
+            if (selectedFileName != null)
+                for (int i = 0; i < convertedListBox.Items.Count; i++)
+                    if (string.Equals(convertedListBox.Items[i].ToString(), selectedFileName,
+                        StringComparison.OrdinalIgnoreCase))
+                    {
+                        convertedListBox.SelectedIndex = i;
+                        return;
+                    }
+            if (convertedListBox.Items.Count > 0 && convertedListBox.SelectedIndex < 0)
+                convertedListBox.SelectedIndex = 0;
         }
 
         private void ClearPreview()
@@ -574,6 +619,7 @@ namespace QFG5Extractor.Resources.Panorama
             if (disposing)
             {
                 ClearPreview();
+                SharedState.OnPanoFilesChanged -= PanoFilesChanged;
             }
             base.Dispose(disposing);
         }

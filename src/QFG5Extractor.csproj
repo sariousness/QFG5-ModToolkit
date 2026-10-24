@@ -77,6 +77,8 @@
     <Compile Include="Core\MainForm.cs" />
     <Compile Include="Resources\Panorama\PanoTab.cs" />
     <Compile Include="Resources\Panorama\PanoConverter.cs" />
+    <Compile Include="Resources\Panorama\RoomLocationCatalog.cs" />
+    <Compile Include="Resources\Panorama\RoomStudioTab.cs" />
     <Compile Include="Resources\Message\MsgTab.cs" />
     <Compile Include="Resources\Message\MsgConverter.cs" />
     <Compile Include="Resources\Model\ModelTab.cs" />
@@ -90,12 +92,16 @@
     <Compile Include="Resources\Model\MeshData.cs" />
     <Compile Include="Resources\Model\NormalGenerator.cs" />
     <Compile Include="Resources\Model\MeshLoader.cs" />
+    <Compile Include="Resources\Model\AnmAnimationLoader.cs" />
     <Compile Include="Viewers\Model\MdlViewer.cs" />
     <Compile Include="Resources\Model\ModelDatabase.cs" />
     <Compile Include="Core\Logger.cs" />
     <Compile Include="Storage\SPK\SpkTab.cs" />
     <Compile Include="Storage\SPK\SpkConverter.cs" />
+    <Compile Include="Storage\SPK\AssetArchiveHelper.cs" />
     <Compile Include="Resources\Save\SaveGameParser.cs" />
+    <Compile Include="Resources\Save\CharacterModelCatalog.cs" />
+    <Compile Include="Resources\Save\CharacterModelPreviewControl.cs" />
     <Compile Include="Resources\Save\SaveSession.cs" />
     <Compile Include="Resources\Save\SaveTab.cs" />
     <Compile Include="Resources\Save\FlagsTab.cs" />
@@ -118,6 +124,15 @@
     <None Include="model_db.json">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </None>
+    <None Include="..\..\Resources\QG5Edit\objects.dat">
+      <Link>objects.dat</Link>
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
+    <None Include="..\..\Resources\QG5Edit\flags.dat">
+      <Link>flags.dat</Link>
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
+    <EmbeddedResource Include="Resources\Gra\gra-column-major-defaults.txt" />
   </ItemGroup>
   <Import Project="$(MSBuildToolsPath)\Microsoft.CSharp.targets" />
 </Project>

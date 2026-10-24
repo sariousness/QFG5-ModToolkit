@@ -53,8 +53,8 @@ namespace QFG5Extractor.Resources.Model
             List<Bitmap> bitmaps = new List<Bitmap>();
             try
             {
-                int mdlPaletteAddress = 0x29;
-                byte[] mdlPalette = new byte[1023];
+                int mdlPaletteAddress = Constants.MDL_DISPLAY_PALETTE_ADDRESS;
+                byte[] mdlPalette = new byte[Constants.BITMAP_DISPLAY_PALETTE_LENGTH];
 
                 using (BinaryReader bReader = new BinaryReader(File.Open(file, FileMode.Open, FileAccess.Read)))
                 {
@@ -88,15 +88,19 @@ namespace QFG5Extractor.Resources.Model
 
                         int width = widthMinus1 + 1;
                         int height = heightMinus1 + 1;
-                        int dataSize = width * height;
+                        int dataSize = checked(width * height);
+                        int rowStride = ((width + 3) / 4) * 4;
+                        int imageSize = checked(rowStride * height);
 
                         byte[] pixelData = bReader.ReadBytes(dataSize);
+                        if (pixelData.Length != dataSize)
+                            throw new InvalidDataException("The MDL texture pixel data is truncated.");
 
                         using (MemoryStream ms = new MemoryStream())
                         {
                             BinaryWriter bw = new BinaryWriter(ms);
                             bw.Write(new byte[] { 0x42, 0x4d }); // BM
-                            bw.Write((uint)(54 + 1024 + pixelData.Length));
+                            bw.Write((uint)(54 + 1024 + imageSize));
                             bw.Write((ushort)0); bw.Write((ushort)0);
                             bw.Write((uint)(54 + 1024));
                             bw.Write((uint)40);
@@ -105,13 +109,19 @@ namespace QFG5Extractor.Resources.Model
                             bw.Write((ushort)1);
                             bw.Write((ushort)8);
                             bw.Write((uint)0);
-                            bw.Write((uint)pixelData.Length);
+                            bw.Write((uint)imageSize);
                             bw.Write(0); bw.Write(0);
                             bw.Write((uint)256);
                             bw.Write((uint)0);
                             bw.Write(mdlPalette);
-                            bw.Write((byte)0);
-                            bw.Write(pixelData);
+                            for (int i = mdlPalette.Length; i < 1024; i++)
+                                bw.Write((byte)0);
+                            for (int row = 0; row < height; row++)
+                            {
+                                bw.Write(pixelData, row * width, width);
+                                for (int padding = width; padding < rowStride; padding++)
+                                    bw.Write((byte)0);
+                            }
                             bw.Flush();
 
                             ms.Position = 0;

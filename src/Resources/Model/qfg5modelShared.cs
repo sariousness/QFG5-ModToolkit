@@ -9,10 +9,12 @@ namespace QFG5Extractor.Resources.Model
         public const int MDL_HEADER_NAME_ADDRESS = 0x0C;
         public const int MDL_HEADER_NUMBER_OF_SUBMESHES_ADDRESS = 0x1C;
         public const int MDL_HEADER_BITMAPPALETTE_ADDRESS = 0x2D;
+        public const int MDL_DISPLAY_PALETTE_ADDRESS = MDL_HEADER_BITMAPPALETTE_ADDRESS - BYTES_PER_INT;
         public const int MDL_HEADER_BITMAPHEADERADDRESSREFERENCE_ADDRESS = 0x428;
         public const int MDL_HEADER_3DDATA_ADDRESS = 0x42c;
 
         public const int BITMAP_PALETTE_LENGTH = 1019;
+        public const int BITMAP_DISPLAY_PALETTE_LENGTH = BITMAP_PALETTE_LENGTH + BYTES_PER_INT;
         public const int SUBMESH_NAME_LENGTH = 10;
         public const int SUBMESH_DATAPOINTS_PER_VERTEX = 3;
         public const int SUBMESH_DATAPOINTS_PER_UV_COORDS = 2;

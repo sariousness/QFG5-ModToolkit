@@ -1,11 +1,14 @@
 using QFG5Extractor.Core;
 using System;
 using System.Drawing;
+using System.Globalization;
 using System.Windows.Forms;
 using System.IO;
 using System.Threading.Tasks;
 using System.Collections.Generic;
+using System.Linq;
 using QFG5Extractor.Core.UI;
+using QFG5Extractor.Resources.Panorama;
 
 namespace QFG5Extractor.Resources.Save
 {
@@ -21,6 +24,19 @@ namespace QFG5Extractor.Resources.Save
         public event Action<string> SaveLoadRequested;
 
         private FlowLayoutPanel visualGrid;
+        private FlowLayoutPanel catalogGrid;
+        private FlowLayoutPanel catalogCategoryButtons;
+        private Panel inventoryViewHost;
+        private TextBox catalogSearchBox;
+        private Button btnListView;
+        private Button btnIconView;
+        private ContextMenuStrip inventoryContextMenu;
+        private ToolStripMenuItem menuDuplicateItem;
+        private ToolStripMenuItem menuInsertEmptyItem;
+        private ToolStripMenuItem menuDeleteItem;
+        private string selectedCatalogCategory = "All";
+        private readonly Dictionary<string, Button> catalogCategoryButtonMap =
+            new Dictionary<string, Button>(StringComparer.OrdinalIgnoreCase);
         private string inventoryPath;
         private Panel previewPopup;
         private PictureBox previewBox;
@@ -29,9 +45,40 @@ namespace QFG5Extractor.Resources.Save
         private int previewFrameIdx = 0;
         private bool hasLoadedSave;
         private bool gridRefreshInProgress;
+        private bool updatingCharacterModelControls;
+        private bool updatingRoomControls;
         private int paletteRefreshVersion;
         private Label paletteStatusLabel;
         private Label hoverNameLabel;
+        private NumericUpDown numericCharacterModelId;
+        private ComboBox comboCharacterModelName;
+        private Button btnApplyCharacterModel;
+        private Label characterModelStatusLabel;
+        private NumericUpDown numericRoomId;
+        private ComboBox comboRoomName;
+        private Button btnApplyRoom;
+        private Label roomStatusLabel;
+        private Label characterCoordinatesLabel;
+        private Label characterRotationSizeLabel;
+        private Label saveFileSizeLabel;
+        private Button btnInventoryScreen;
+        private Button btnCharacterScreen;
+        private Button btnFlagsScreen;
+        private Panel inventoryScreenPanel;
+        private Panel characterScreenPanel;
+        private Panel flagsScreenPanel;
+        private CharacterModelPreviewControl characterModelPreview;
+        private PanoramaProjectionControl roomPreview;
+        private Label roomPreviewStatusLabel;
+        private FlagsTab flagsScreen;
+        private readonly List<PaletteItem> catalogItems = new List<PaletteItem>();
+
+        private enum SaveEditorScreen
+        {
+            Inventory,
+            Character,
+            Flags
+        }
 
         private sealed class PaletteSection
         {
@@ -43,7 +90,9 @@ namespace QFG5Extractor.Resources.Save
         {
             public string IdHex;
             public string Name;
+            public string Category;
             public Image Image;
+            public int Offset = -1;
         }
 
         public SaveTab(SaveSession session)
@@ -63,6 +112,18 @@ namespace QFG5Extractor.Resources.Save
 
             InitializeComponent();
             CreatePreviewPopup();
+        }
+
+        public void AttachFlagsScreen(FlagsTab tab)
+        {
+            if (tab == null) throw new ArgumentNullException("tab");
+            if (flagsScreen != null)
+                throw new InvalidOperationException("A Flags screen is already attached.");
+
+            flagsScreen = tab;
+            tab.Dock = DockStyle.Fill;
+            flagsScreenPanel.Controls.Add(tab);
+            tab.RefreshFromSession();
         }
 
         private void CreatePreviewPopup()
@@ -108,10 +169,11 @@ namespace QFG5Extractor.Resources.Save
             QFG5TableLayoutPanel mainLayout = new QFG5TableLayoutPanel {
                 Dock = DockStyle.Fill,
                 ColumnCount = 1,
-                RowCount = 2,
+                RowCount = 3,
                 Padding = new Padding(QFG5Layout.ContentPadding)
             };
             mainLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, QFG5Layout.RowHeight + 30));
+            mainLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 38));
             mainLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
 
             btnLoad = new QFG5Button { Text = "Load", Width = QFG5Layout.ButtonWidth, Height = 30 };
@@ -123,6 +185,289 @@ namespace QFG5Extractor.Resources.Save
             QFG5TableLayoutPanel header = QFG5Layout.CreatePathRow("Save File:", out txtFilePath, out browseBtn, btnLoad, btnSave);
             btnBrowse = browseBtn;
             btnBrowse.Click += BtnBrowse_Click;
+
+            Panel characterModelPanel = new Panel {
+                Dock = DockStyle.Fill,
+                BackColor = QFG5Theme.ColorSurface
+            };
+            FlowLayoutPanel characterModelToolbar = new FlowLayoutPanel {
+                Dock = DockStyle.Top,
+                Height = 66,
+                Padding = new Padding(6, 4, 6, 2),
+                BackColor = QFG5Theme.ColorSurface,
+                FlowDirection = FlowDirection.LeftToRight,
+                WrapContents = true
+            };
+            Label modelIdLabel = new Label {
+                Text = "Model ID:",
+                AutoSize = true,
+                ForeColor = QFG5Theme.ColorTextPrimary,
+                Font = QFG5Theme.BodyFont,
+                Margin = new Padding(2, 7, 4, 0)
+            };
+            numericCharacterModelId = new NumericUpDown {
+                Minimum = 0,
+                Maximum = byte.MaxValue,
+                Width = 68,
+                Height = 27,
+                Enabled = false,
+                BackColor = QFG5Theme.ColorSurfaceRecessed,
+                ForeColor = QFG5Theme.ColorTextPrimary,
+                TextAlign = HorizontalAlignment.Center,
+                Margin = new Padding(0, 2, 10, 0)
+            };
+            numericCharacterModelId.ValueChanged += CharacterModelId_ValueChanged;
+            Label modelNameLabel = new Label {
+                Text = "Name:",
+                AutoSize = true,
+                ForeColor = QFG5Theme.ColorTextPrimary,
+                Font = QFG5Theme.BodyFont,
+                Margin = new Padding(0, 7, 4, 0)
+            };
+            comboCharacterModelName = new ComboBox {
+                DropDownStyle = ComboBoxStyle.DropDownList,
+                Width = 150,
+                Height = 27,
+                Enabled = false,
+                BackColor = QFG5Theme.ColorSurfaceRecessed,
+                ForeColor = QFG5Theme.ColorTextPrimary,
+                FlatStyle = FlatStyle.Flat,
+                Margin = new Padding(0, 2, 8, 0)
+            };
+            foreach (CharacterModelInfo model in CharacterModelCatalog.Models)
+                comboCharacterModelName.Items.Add(model);
+            comboCharacterModelName.SelectedIndexChanged += CharacterModelName_SelectedIndexChanged;
+            btnApplyCharacterModel = new QFG5Button {
+                Text = "Apply Model",
+                Width = 112,
+                Height = 29,
+                Enabled = false,
+                Margin = new Padding(0, 1, 0, 0)
+            };
+            btnApplyCharacterModel.Click += ApplyCharacterModel_Click;
+            characterModelToolbar.Controls.Add(modelIdLabel);
+            characterModelToolbar.Controls.Add(numericCharacterModelId);
+            characterModelToolbar.Controls.Add(modelNameLabel);
+            characterModelToolbar.Controls.Add(comboCharacterModelName);
+            characterModelToolbar.Controls.Add(btnApplyCharacterModel);
+            characterModelToolbar.SizeChanged += (s, e) =>
+                FitCharacterToolbar(characterModelToolbar, comboCharacterModelName,
+                    btnApplyCharacterModel, 150);
+            FitCharacterToolbar(characterModelToolbar, comboCharacterModelName,
+                btnApplyCharacterModel, 150);
+            characterModelStatusLabel = new Label {
+                Text = "Load a save to change its character model.",
+                Dock = DockStyle.Bottom,
+                Height = 25,
+                Padding = new Padding(8, 3, 0, 0),
+                ForeColor = QFG5Theme.ColorTextMuted,
+                Font = QFG5Theme.BodyFont,
+                BackColor = QFG5Theme.ColorSurface
+            };
+            characterModelPanel.Controls.Add(characterModelStatusLabel);
+            characterModelPanel.Controls.Add(characterModelToolbar);
+
+            Panel roomPanel = new Panel {
+                Dock = DockStyle.Fill,
+                BackColor = QFG5Theme.ColorSurface,
+                Margin = new Padding(0)
+            };
+            FlowLayoutPanel roomToolbar = new FlowLayoutPanel {
+                Dock = DockStyle.Top,
+                Height = 66,
+                Padding = new Padding(6, 4, 6, 2),
+                BackColor = QFG5Theme.ColorSurface,
+                FlowDirection = FlowDirection.LeftToRight,
+                WrapContents = true
+            };
+            Label roomIdLabel = new Label {
+                Text = "Room ID:",
+                AutoSize = true,
+                ForeColor = QFG5Theme.ColorTextPrimary,
+                Font = QFG5Theme.BodyFont,
+                Margin = new Padding(2, 7, 4, 0)
+            };
+            numericRoomId = new NumericUpDown {
+                Minimum = 0,
+                Maximum = 900,
+                Width = 78,
+                Height = 27,
+                Enabled = false,
+                BackColor = QFG5Theme.ColorSurfaceRecessed,
+                ForeColor = QFG5Theme.ColorTextPrimary,
+                TextAlign = HorizontalAlignment.Center,
+                Margin = new Padding(0, 2, 10, 0)
+            };
+            numericRoomId.ValueChanged += RoomId_ValueChanged;
+            Label roomNameLabel = new Label {
+                Text = "Location:",
+                AutoSize = true,
+                ForeColor = QFG5Theme.ColorTextPrimary,
+                Font = QFG5Theme.BodyFont,
+                Margin = new Padding(0, 7, 4, 0)
+            };
+            comboRoomName = new ComboBox {
+                DropDownStyle = ComboBoxStyle.DropDownList,
+                Width = 190,
+                Height = 27,
+                Enabled = false,
+                BackColor = QFG5Theme.ColorSurfaceRecessed,
+                ForeColor = QFG5Theme.ColorTextPrimary,
+                FlatStyle = FlatStyle.Flat,
+                Margin = new Padding(0, 2, 8, 0)
+            };
+            foreach (RoomLocationInfo location in RoomLocationCatalog.Locations.OrderByDescending(room => room.Id))
+                comboRoomName.Items.Add(location);
+            comboRoomName.SelectedIndexChanged += RoomName_SelectedIndexChanged;
+            btnApplyRoom = new QFG5Button {
+                Text = "Apply Room",
+                Width = 112,
+                Height = 29,
+                Enabled = false,
+                Margin = new Padding(0, 1, 0, 0)
+            };
+            btnApplyRoom.Click += ApplyRoom_Click;
+            roomToolbar.Controls.Add(roomIdLabel);
+            roomToolbar.Controls.Add(numericRoomId);
+            roomToolbar.Controls.Add(roomNameLabel);
+            roomToolbar.Controls.Add(comboRoomName);
+            roomToolbar.Controls.Add(btnApplyRoom);
+            roomToolbar.SizeChanged += (s, e) =>
+                FitCharacterToolbar(roomToolbar, comboRoomName, btnApplyRoom, 190);
+            FitCharacterToolbar(roomToolbar, comboRoomName, btnApplyRoom, 190);
+            roomStatusLabel = new Label {
+                Text = "Load a save to change its room.",
+                Dock = DockStyle.Bottom,
+                Height = 25,
+                Padding = new Padding(8, 3, 0, 0),
+                ForeColor = QFG5Theme.ColorTextMuted,
+                Font = QFG5Theme.BodyFont,
+                BackColor = QFG5Theme.ColorSurface
+            };
+            roomPanel.Controls.Add(roomStatusLabel);
+            roomPanel.Controls.Add(roomToolbar);
+
+            TableLayoutPanel characterDiagnostics = new TableLayoutPanel {
+                Dock = DockStyle.Fill,
+                ColumnCount = 1,
+                RowCount = 3,
+                BackColor = QFG5Theme.ColorSurface,
+                Padding = new Padding(6, 2, 6, 2),
+                Margin = new Padding(0)
+            };
+            characterDiagnostics.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+            characterDiagnostics.RowStyles.Add(new RowStyle(SizeType.Absolute, 28));
+            characterDiagnostics.RowStyles.Add(new RowStyle(SizeType.Absolute, 28));
+            characterDiagnostics.RowStyles.Add(new RowStyle(SizeType.Absolute, 36));
+            characterCoordinatesLabel = new Label {
+                Text = "Load a save to view character coordinates.",
+                Dock = DockStyle.Fill,
+                ForeColor = QFG5Theme.ColorTextPrimary,
+                Font = QFG5Theme.BodyFont,
+                TextAlign = ContentAlignment.MiddleLeft,
+                AutoEllipsis = true
+            };
+            characterRotationSizeLabel = new Label {
+                Text = "Rotation and size are read-only.",
+                Dock = DockStyle.Fill,
+                ForeColor = QFG5Theme.ColorTextPrimary,
+                Font = QFG5Theme.BodyFont,
+                TextAlign = ContentAlignment.MiddleLeft,
+                AutoEllipsis = true
+            };
+            saveFileSizeLabel = new Label {
+                Text = "Load a save to verify its file size.",
+                Dock = DockStyle.Fill,
+                ForeColor = QFG5Theme.ColorTextMuted,
+                Font = QFG5Theme.BodyFont,
+                TextAlign = ContentAlignment.MiddleLeft,
+                AutoEllipsis = true
+            };
+            characterDiagnostics.Controls.Add(characterCoordinatesLabel, 0, 0);
+            characterDiagnostics.Controls.Add(characterRotationSizeLabel, 0, 1);
+            characterDiagnostics.Controls.Add(saveFileSizeLabel, 0, 2);
+
+            TableLayoutPanel characterDetails = new TableLayoutPanel {
+                Dock = DockStyle.Top,
+                Height = 288,
+                ColumnCount = 1,
+                RowCount = 3,
+                BackColor = QFG5Theme.ColorBgDark,
+                Padding = new Padding(0),
+                Margin = new Padding(0)
+            };
+            characterDetails.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+            characterDetails.RowStyles.Add(new RowStyle(SizeType.Absolute, 96));
+            characterDetails.RowStyles.Add(new RowStyle(SizeType.Absolute, 96));
+            characterDetails.RowStyles.Add(new RowStyle(SizeType.Absolute, 96));
+            characterModelPanel.Margin = new Padding(0);
+            characterDetails.Controls.Add(characterModelPanel, 0, 0);
+            characterDetails.Controls.Add(roomPanel, 0, 1);
+            characterDetails.Controls.Add(characterDiagnostics, 0, 2);
+
+            SplitContainer characterDetailsRoomSplit = new SplitContainer {
+                Dock = DockStyle.Fill,
+                Orientation = Orientation.Horizontal,
+                BackColor = QFG5Theme.ColorBgDark,
+                SplitterWidth = 6,
+                Panel1MinSize = 288,
+                Panel2MinSize = 180
+            };
+            characterDetails.Dock = DockStyle.Fill;
+            characterModelPreview = new CharacterModelPreviewControl {
+                Dock = DockStyle.Fill,
+                Margin = new Padding(4)
+            };
+            TableLayoutPanel roomPreviewLayout = new TableLayoutPanel {
+                Dock = DockStyle.Fill,
+                ColumnCount = 1,
+                RowCount = 3,
+                BackColor = QFG5Theme.ColorSurface,
+                Padding = new Padding(6),
+                Margin = new Padding(4)
+            };
+            roomPreviewLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+            roomPreviewLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 28));
+            roomPreviewLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+            roomPreviewLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 42));
+            Label roomPreviewTitle = new Label {
+                Text = "ROOM PREVIEW",
+                Dock = DockStyle.Fill,
+                ForeColor = QFG5Theme.ColorTextGold,
+                Font = QFG5Theme.SectionHeaderFont,
+                TextAlign = ContentAlignment.MiddleCenter,
+                BackColor = QFG5Theme.ColorSurface
+            };
+            roomPreview = new PanoramaProjectionControl {
+                Dock = DockStyle.Fill,
+                Margin = new Padding(0)
+            };
+            roomPreviewStatusLabel = new Label {
+                Text = "Load a save to preview its room.",
+                Dock = DockStyle.Fill,
+                ForeColor = QFG5Theme.ColorTextMuted,
+                Font = QFG5Theme.CaptionFont,
+                TextAlign = ContentAlignment.MiddleCenter,
+                AutoEllipsis = true
+            };
+            roomPreviewLayout.Controls.Add(roomPreviewTitle, 0, 0);
+            roomPreviewLayout.Controls.Add(roomPreview, 0, 1);
+            roomPreviewLayout.Controls.Add(roomPreviewStatusLabel, 0, 2);
+            characterDetailsRoomSplit.Panel1.Controls.Add(characterDetails);
+            characterDetailsRoomSplit.Panel2.Controls.Add(roomPreviewLayout);
+            QFG5Layout.SetSplitterRatioOnce(characterDetailsRoomSplit, 0.48, false);
+
+            SplitContainer characterScreenSplit = new SplitContainer {
+                Dock = DockStyle.Fill,
+                Orientation = Orientation.Vertical,
+                BackColor = QFG5Theme.ColorBgDark,
+                SplitterWidth = 6,
+                Panel1MinSize = 250,
+                Panel2MinSize = 250
+            };
+            characterScreenSplit.Panel1.Controls.Add(characterDetailsRoomSplit);
+            characterScreenSplit.Panel2.Controls.Add(characterModelPreview);
+            QFG5Layout.SetSplitterRatioOnce(characterScreenSplit, 0.56);
 
             gridInventory = new DataGridView
             {
@@ -190,33 +535,61 @@ namespace QFG5Extractor.Resources.Save
                 }
             };
 
-            // Context menu for insertion/deletion
-            ContextMenuStrip menu = new ContextMenuStrip();
-            menu.Items.Add("Insert Item Below", null, BtnInsert_Click);
-            menu.Items.Add("Delete Item", null, BtnDelete_Click);
-            gridInventory.ContextMenuStrip = menu;
+            inventoryContextMenu = new ContextMenuStrip();
+            menuDuplicateItem = new ToolStripMenuItem("Duplicate Item Below", null, BtnInsert_Click);
+            menuInsertEmptyItem = new ToolStripMenuItem("Add Empty Slot Below", null, BtnInsertEmpty_Click);
+            menuDeleteItem = new ToolStripMenuItem("Delete Item", null, BtnDelete_Click);
+            inventoryContextMenu.Items.AddRange(new ToolStripItem[] {
+                menuDuplicateItem, menuInsertEmptyItem, new ToolStripSeparator(), menuDeleteItem
+            });
+            inventoryContextMenu.Opening += InventoryContextMenu_Opening;
+            gridInventory.ContextMenuStrip = inventoryContextMenu;
             SplitContainer split = new SplitContainer {
                 Dock = DockStyle.Fill,
                 Orientation = Orientation.Vertical,
                 BackColor = QFG5Theme.ColorBgDark,
                 SplitterWidth = 6,
-                Panel1MinSize = 420,
-                Panel2MinSize = 280
+                Panel1MinSize = 360,
+                Panel2MinSize = 300
             };
             QFG5Layout.SetSplitterRatioOnce(split, 0.62);
-            
+
+            Panel inventorySide = new Panel { Dock = DockStyle.Fill, BackColor = QFG5Theme.ColorBgDark };
+            FlowLayoutPanel viewToolbar = new FlowLayoutPanel {
+                Dock = DockStyle.Top,
+                Height = 38,
+                Padding = new Padding(4, 3, 4, 3),
+                BackColor = QFG5Theme.ColorSurface,
+                FlowDirection = FlowDirection.LeftToRight,
+                WrapContents = false
+            };
+            Label viewLabel = new Label {
+                Text = "SAVE VIEW",
+                AutoSize = true,
+                ForeColor = QFG5Theme.ColorTextGold,
+                Font = QFG5Theme.BodyBoldFont,
+                TextAlign = ContentAlignment.MiddleLeft,
+                Margin = new Padding(4, 5, 12, 0)
+            };
+            btnListView = CreateViewButton("List");
+            btnIconView = CreateViewButton("Icons");
+            btnListView.Click += (s, e) => SetInventoryView(false);
+            btnIconView.Click += (s, e) => SetInventoryView(true);
+            viewToolbar.Controls.Add(viewLabel);
+            viewToolbar.Controls.Add(btnListView);
+            viewToolbar.Controls.Add(btnIconView);
+
             QFG5PreviewFrame gridFrame = new QFG5PreviewFrame { Dock = DockStyle.Fill };
             gridFrame.Controls.Add(gridInventory);
 
-            // Container for visual inventory + hover name
-            Panel pnlVisualSide = new Panel { Dock = DockStyle.Fill };
-            Panel pnlPaletteInfo = new Panel {
-                Dock = DockStyle.Top,
-                Height = 52,
-                BackColor = QFG5Theme.ColorSurface
-            };
+            Panel inventoryIconView = new Panel { Dock = DockStyle.Fill };
+            inventoryViewHost = new Panel { Dock = DockStyle.Fill };
+            inventoryViewHost.Controls.Add(gridFrame);
+            inventoryViewHost.Controls.Add(inventoryIconView);
+
+            Panel pnlPaletteInfo = new Panel { Dock = DockStyle.Top, Height = 52, BackColor = QFG5Theme.ColorSurface };
             hoverNameLabel = new Label {
-                Text = "Hover over an item to see its name...", 
+                Text = "Hover over an item to see its name...",
                 ForeColor = QFG5Theme.ColorTextMuted,
                 Location = new Point(0, 0),
                 Height = 26,
@@ -235,54 +608,590 @@ namespace QFG5Extractor.Resources.Save
             };
             pnlPaletteInfo.Controls.Add(paletteStatusLabel);
             pnlPaletteInfo.Controls.Add(hoverNameLabel);
-
             visualGrid = new FlowLayoutPanel { 
                 Dock = DockStyle.Fill, 
                 AutoScroll = true, 
                 BackColor = QFG5Theme.ColorSurfaceRecessed,
                 Padding = new Padding(0)
             };
-            visualGrid.SizeChanged += (s, e) => {
-                UpdatePaletteItemSizes();
+            visualGrid.SizeChanged += (s, e) => UpdatePaletteItemSizes();
+            inventoryIconView.Controls.Add(visualGrid);
+            inventoryIconView.Controls.Add(pnlPaletteInfo);
+
+            Panel catalogSide = new Panel { Dock = DockStyle.Fill, BackColor = QFG5Theme.ColorBgDark };
+            Label catalogTitle = new Label {
+                Text = "GAME ITEM CATALOG",
+                Dock = DockStyle.Top,
+                Height = 32,
+                Padding = new Padding(8, 0, 0, 0),
+                ForeColor = QFG5Theme.ColorTextGold,
+                Font = QFG5Theme.SectionHeaderFont,
+                TextAlign = ContentAlignment.MiddleLeft,
+                BackColor = QFG5Theme.ColorSurface
             };
-            
-            pnlVisualSide.Controls.Add(visualGrid);
-            pnlVisualSide.Controls.Add(pnlPaletteInfo);
+            catalogCategoryButtons = new FlowLayoutPanel {
+                Dock = DockStyle.Top,
+                Height = 34,
+                Padding = new Padding(4, 2, 4, 2),
+                BackColor = QFG5Theme.ColorSurface,
+                FlowDirection = FlowDirection.LeftToRight,
+                WrapContents = false
+            };
+            foreach (string category in new[] { "All", "Items", "Equipment", "Spells", "Other" })
+            {
+                Button categoryButton = CreateViewButton(category);
+                categoryButton.AutoSize = false;
+                categoryButton.Click += (s, e) => SelectCatalogCategory(category);
+                catalogCategoryButtonMap.Add(category, categoryButton);
+                catalogCategoryButtons.Controls.Add(categoryButton);
+            }
+            catalogCategoryButtons.SizeChanged += (s, e) => UpdateCatalogCategoryButtonSizes();
+            catalogCategoryButtons.Layout += (s, e) => UpdateCatalogCategoryButtonSizes();
+            catalogSearchBox = new TextBox {
+                Dock = DockStyle.Top,
+                Height = 28,
+                BackColor = QFG5Theme.ColorSurfaceRecessed,
+                ForeColor = QFG5Theme.ColorTextPrimary,
+                Margin = new Padding(4)
+            };
+            catalogSearchBox.TextChanged += (s, e) => RenderCatalog();
+            catalogGrid = new FlowLayoutPanel {
+                Dock = DockStyle.Fill,
+                AutoScroll = true,
+                BackColor = QFG5Theme.ColorSurfaceRecessed,
+                Padding = new Padding(4),
+                WrapContents = true
+            };
+            catalogGrid.SizeChanged += (s, e) => UpdateCatalogItemSizes();
+            catalogSide.Controls.Add(catalogGrid);
+            catalogSide.Controls.Add(catalogSearchBox);
+            catalogSide.Controls.Add(catalogCategoryButtons);
+            catalogSide.Controls.Add(catalogTitle);
+            catalogSide.SizeChanged += (s, e) => UpdateCatalogCategoryButtonSizes();
+
+            inventorySide.Controls.Add(inventoryViewHost);
+            inventorySide.Controls.Add(viewToolbar);
+            SetInventoryView(false);
 
             gridInventory.AllowDrop = true;
+            gridInventory.DragEnter += CatalogDragEnter;
             gridInventory.DragOver += (s, e) => {
-                e.Effect = DragDropEffects.Copy;
+                e.Effect = e.Data.GetDataPresent(typeof(PaletteItem)) ? DragDropEffects.Copy : DragDropEffects.None;
             };
-            gridInventory.DragDrop += (s, e) => {
-                Point p = gridInventory.PointToClient(new Point(e.X, e.Y));
-                var hit = gridInventory.HitTest(p.X, p.Y);
-                if (hit.RowIndex >= 0) {
-                    string[] data = ((string)e.Data.GetData(typeof(string))).Split('|');
-                    string idHex = data[0];
-                    string name = data[1];
-                    
-                    gridInventory.Rows[hit.RowIndex].Cells["IdHex"].Value = idHex;
-                    gridInventory.Rows[hit.RowIndex].Cells["Name"].Value = name;
-                    gridInventory.EndEdit();
-                }
-            };
+            gridInventory.DragDrop += GridInventory_DragDrop;
 
-            gridInventory.SelectionChanged += (s, e) => {
-                // Removed UpdateVisualSelection as we now show all items palette
-            };
+            split.Panel1.Controls.Add(inventorySide);
+            split.Panel2.Controls.Add(catalogSide);
 
-            split.Panel1.Controls.Add(gridFrame);
-            split.Panel2.Controls.Add(pnlVisualSide);
+            FlowLayoutPanel screenNavigation = new FlowLayoutPanel {
+                Dock = DockStyle.Fill,
+                Padding = new Padding(4, 3, 4, 2),
+                BackColor = QFG5Theme.ColorSurface,
+                FlowDirection = FlowDirection.LeftToRight,
+                WrapContents = false
+            };
+            btnInventoryScreen = CreateViewButton("Inventory");
+            btnInventoryScreen.Name = "InventoryScreenButton";
+            btnInventoryScreen.Width = 104;
+            btnInventoryScreen.Height = 30;
+            btnCharacterScreen = CreateViewButton("Character");
+            btnCharacterScreen.Name = "CharacterScreenButton";
+            btnCharacterScreen.Width = 104;
+            btnCharacterScreen.Height = 30;
+            btnCharacterScreen.Click += (s, e) => SetSaveScreen(SaveEditorScreen.Character);
+            btnInventoryScreen.Click += (s, e) => SetSaveScreen(SaveEditorScreen.Inventory);
+            btnFlagsScreen = CreateViewButton("Flags");
+            btnFlagsScreen.Name = "FlagsScreenButton";
+            btnFlagsScreen.Width = 104;
+            btnFlagsScreen.Height = 30;
+            btnFlagsScreen.Click += (s, e) => SetSaveScreen(SaveEditorScreen.Flags);
+            screenNavigation.Controls.Add(btnInventoryScreen);
+            screenNavigation.Controls.Add(btnCharacterScreen);
+            screenNavigation.Controls.Add(btnFlagsScreen);
+
+            Panel saveScreenHost = new Panel {
+                Dock = DockStyle.Fill,
+                BackColor = QFG5Theme.ColorBgDark
+            };
+            inventoryScreenPanel = new Panel {
+                Dock = DockStyle.Fill,
+                BackColor = QFG5Theme.ColorBgDark,
+                Padding = new Padding(4)
+            };
+            characterScreenPanel = new Panel {
+                Dock = DockStyle.Fill,
+                BackColor = QFG5Theme.ColorBgDark,
+                Padding = new Padding(8)
+            };
+            flagsScreenPanel = new Panel {
+                Dock = DockStyle.Fill,
+                BackColor = QFG5Theme.ColorBgDark,
+                Padding = new Padding(4),
+                Visible = false
+            };
+            split.Dock = DockStyle.Fill;
+            characterScreenPanel.Controls.Add(characterScreenSplit);
+            inventoryScreenPanel.Controls.Add(split);
+            saveScreenHost.Controls.Add(inventoryScreenPanel);
+            saveScreenHost.Controls.Add(characterScreenPanel);
+            saveScreenHost.Controls.Add(flagsScreenPanel);
 
             mainLayout.Controls.Add(new QFG5CollapsibleSection("SAVE FILE", header, QFG5Layout.RowHeight + 30), 0, 0);
-            mainLayout.Controls.Add(split, 0, 1);
-
+            mainLayout.Controls.Add(screenNavigation, 0, 1);
+            mainLayout.Controls.Add(saveScreenHost, 0, 2);
             this.Controls.Add(mainLayout);
+            SetSaveScreen(SaveEditorScreen.Inventory);
 
             this.Load += (s, e) => {
                 this.PerformLayout();
                 UpdatePaletteItemSizes();
+                UpdateCatalogItemSizes();
+                if (IsHandleCreated)
+                {
+                    BeginInvoke((MethodInvoker)delegate
+                    {
+                        UpdateCatalogCategoryButtonSizes();
+                        UpdateCatalogItemSizes();
+                    });
+                }
             };
+            PopulateCatalog();
+            UpdateCatalogCategoryButtons();
+        }
+
+        private void SetSaveScreen(SaveEditorScreen screen)
+        {
+            if (inventoryScreenPanel == null || characterScreenPanel == null ||
+                flagsScreenPanel == null || btnInventoryScreen == null ||
+                btnCharacterScreen == null || btnFlagsScreen == null)
+                return;
+
+            inventoryScreenPanel.Visible = screen == SaveEditorScreen.Inventory;
+            characterScreenPanel.Visible = screen == SaveEditorScreen.Character;
+            flagsScreenPanel.Visible = screen == SaveEditorScreen.Flags;
+            if (screen == SaveEditorScreen.Inventory)
+                inventoryScreenPanel.BringToFront();
+            else if (screen == SaveEditorScreen.Character)
+                characterScreenPanel.BringToFront();
+            else
+                flagsScreenPanel.BringToFront();
+
+            SetScreenButtonState(btnInventoryScreen, screen == SaveEditorScreen.Inventory);
+            SetScreenButtonState(btnCharacterScreen, screen == SaveEditorScreen.Character);
+            SetScreenButtonState(btnFlagsScreen, screen == SaveEditorScreen.Flags);
+        }
+
+        private static void FitCharacterToolbar(FlowLayoutPanel toolbar, ComboBox selector,
+            Button applyButton, int preferredSelectorWidth)
+        {
+            int availableWidth = Math.Max(0, toolbar.ClientSize.Width - toolbar.Padding.Horizontal);
+            applyButton.Width = Math.Max(82, Math.Min(112, availableWidth / 3));
+            selector.Width = Math.Max(90, Math.Min(preferredSelectorWidth,
+                availableWidth - applyButton.Width - 16));
+        }
+
+        private static void SetScreenButtonState(Button button, bool selected)
+        {
+            if (button == null) return;
+            button.BackColor = selected
+                ? QFG5Theme.ColorBorderHighlight
+                : QFG5Theme.ColorSurfaceRecessed;
+            button.ForeColor = selected
+                ? QFG5Theme.ColorGoldBright
+                : QFG5Theme.ColorTextPrimary;
+            button.Font = selected ? QFG5Theme.BodyBoldFont : QFG5Theme.BodyFont;
+            button.FlatAppearance.BorderColor = selected
+                ? QFG5Theme.ColorGoldBright
+                : QFG5Theme.ColorBorderOuter;
+        }
+
+        private static Button CreateViewButton(string text)
+        {
+            return new Button {
+                Text = text,
+                Width = 72,
+                Height = 28,
+                FlatStyle = FlatStyle.Flat,
+                BackColor = QFG5Theme.ColorSurfaceRecessed,
+                ForeColor = QFG5Theme.ColorTextPrimary,
+                Margin = new Padding(2, 0, 2, 0),
+                Cursor = Cursors.Hand
+            };
+        }
+
+        private void SetInventoryView(bool showIcons)
+        {
+            if (inventoryViewHost != null)
+            {
+                foreach (Control control in inventoryViewHost.Controls)
+                    control.Visible = (showIcons && control != gridInventory.Parent) ||
+                        (!showIcons && control == gridInventory.Parent);
+            }
+            if (btnListView != null)
+            {
+                btnListView.BackColor = showIcons ? QFG5Theme.ColorSurfaceRecessed : QFG5Theme.ColorBorderHighlight;
+                btnIconView.BackColor = showIcons ? QFG5Theme.ColorBorderHighlight : QFG5Theme.ColorSurfaceRecessed;
+            }
+        }
+
+        private void PopulateCatalog()
+        {
+            if (catalogGrid == null) return;
+            catalogItems.Clear();
+            HashSet<string> seenIds = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (ItemDatabase.ItemEntry entry in ItemDatabase.GetItems())
+            {
+                if (entry == null || string.IsNullOrWhiteSpace(entry.ID) ||
+                    !seenIds.Add(entry.ID.Trim()))
+                    continue;
+
+                string idHex = entry.ID.Trim().ToUpperInvariant();
+                catalogItems.Add(new PaletteItem {
+                    IdHex = idHex,
+                    Name = entry.Name,
+                    Category = NormalizeCatalogCategory(entry.Category),
+                    Image = idHex == "0000" ? null : GetItemImage(idHex, entry.Name, false)
+                });
+            }
+            ApplySharedIconFallbacks();
+            RenderCatalog();
+        }
+
+        private void ApplySharedIconFallbacks()
+        {
+            foreach (PaletteItem item in catalogItems)
+            {
+                if (item.Image != null) continue;
+                string group = GetSharedIconGroup(item.Name);
+                if (group == null) continue;
+
+                PaletteItem source = catalogItems.FirstOrDefault(candidate =>
+                    candidate != item &&
+                    candidate.Category == item.Category &&
+                    GetSharedIconGroup(candidate.Name) == group &&
+                    candidate.Image != null);
+                if (source == null) continue;
+
+                item.Image = source.Image;
+                Logger.LogInfo("SaveTab shared " + group + " icon for " + item.Name +
+                    " (0x" + item.IdHex + ") from " + source.Name + " (0x" + source.IdHex + ").");
+            }
+        }
+
+        private static string GetSharedIconGroup(string itemName)
+        {
+            if (string.IsNullOrWhiteSpace(itemName)) return null;
+            string normalized = itemName.ToLowerInvariant();
+            if (normalized.Contains("scroll")) return "scroll";
+            if (normalized.Contains("amulet") || normalized.Contains("breathing")) return null;
+            if (normalized.Contains("potion") || normalized.Contains("elixir") ||
+                normalized.Contains("draught") || normalized.Contains("drink") ||
+                normalized.Contains("water") || normalized.Contains("ale") ||
+                normalized.Contains("wine"))
+                return "drink";
+            return null;
+        }
+
+        private void SelectCatalogCategory(string category)
+        {
+            selectedCatalogCategory = category;
+            UpdateCatalogCategoryButtons();
+            RenderCatalog();
+        }
+
+        private void UpdateCatalogCategoryButtons()
+        {
+            foreach (KeyValuePair<string, Button> entry in catalogCategoryButtonMap)
+            {
+                bool isSelected = string.Equals(entry.Key, selectedCatalogCategory, StringComparison.OrdinalIgnoreCase);
+                entry.Value.BackColor = isSelected
+                    ? QFG5Theme.ColorBorderHighlight
+                    : QFG5Theme.ColorSurfaceRecessed;
+            }
+            UpdateCatalogCategoryButtonSizes();
+        }
+
+        private void UpdateCatalogCategoryButtonSizes()
+        {
+            if (catalogCategoryButtons == null || catalogCategoryButtonMap.Count == 0) return;
+            int availableWidth = catalogCategoryButtons.ClientSize.Width -
+                catalogCategoryButtons.Padding.Horizontal;
+            int buttonMargins = catalogCategoryButtonMap.Values
+                .Sum(button => button.Margin.Horizontal);
+            int buttonWidth = Math.Max(1,
+                (availableWidth - buttonMargins) / catalogCategoryButtonMap.Count);
+            foreach (Button button in catalogCategoryButtonMap.Values)
+                button.Width = buttonWidth;
+        }
+
+        private static string NormalizeCatalogCategory(string category)
+        {
+            if (string.Equals(category, "Items", StringComparison.OrdinalIgnoreCase)) return "Items";
+            if (string.Equals(category, "Equipment", StringComparison.OrdinalIgnoreCase)) return "Equipment";
+            if (string.Equals(category, "Spells", StringComparison.OrdinalIgnoreCase)) return "Spells";
+            return "Other";
+        }
+
+        private void RenderCatalog()
+        {
+            foreach (Control control in catalogGrid.Controls) control.Dispose();
+            catalogGrid.Controls.Clear();
+
+            string selectedCategory = selectedCatalogCategory;
+            string search = catalogSearchBox.Text.Trim();
+            string[] categories = selectedCategory == "All"
+                ? new[] { "Items", "Equipment", "Spells", "Other" }
+                : new[] { selectedCategory };
+
+            foreach (string category in categories)
+            {
+                List<PaletteItem> matches = catalogItems
+                    .Where(item => item.Category == category &&
+                        (search.Length == 0 ||
+                         item.Name.IndexOf(search, StringComparison.OrdinalIgnoreCase) >= 0 ||
+                         item.IdHex.IndexOf(search, StringComparison.OrdinalIgnoreCase) >= 0))
+                    .OrderBy(item => item.Name, StringComparer.OrdinalIgnoreCase)
+                    .ToList();
+                if (matches.Count == 0) continue;
+
+                Label sectionLabel = new Label {
+                    Text = category.ToUpperInvariant(),
+                    ForeColor = QFG5Theme.ColorTextGold,
+                    Font = QFG5Theme.SectionHeaderFont,
+                    Width = Math.Max(100, catalogGrid.ClientSize.Width - 30),
+                    Height = 26,
+                    Margin = new Padding(4, 8, 4, 2),
+                    TextAlign = ContentAlignment.MiddleLeft
+                };
+                catalogGrid.Controls.Add(sectionLabel);
+                catalogGrid.SetFlowBreak(sectionLabel, true);
+
+                foreach (PaletteItem item in matches)
+                {
+                    Panel card = new Panel {
+                        Width = 96,
+                        Height = 92,
+                        Margin = new Padding(3),
+                        BackColor = QFG5Theme.ColorSurface,
+                        BorderStyle = BorderStyle.FixedSingle,
+                        Tag = item,
+                        Cursor = Cursors.Hand,
+                        AllowDrop = false
+                    };
+                    PictureBox picture = new PictureBox {
+                        Width = 58,
+                        Height = 54,
+                        Location = new Point(18, 3),
+                        SizeMode = PictureBoxSizeMode.Zoom,
+                        BackColor = QFG5Theme.ColorSurfaceRecessed,
+                        Image = item.Image,
+                        Tag = item,
+                        Cursor = Cursors.Hand
+                    };
+                    Label nameLabel = new Label {
+                        Text = item.Name,
+                        Width = 90,
+                        Height = 29,
+                        Location = new Point(2, 59),
+                        ForeColor = QFG5Theme.ColorTextPrimary,
+                        Font = QFG5Theme.BodyFont,
+                        TextAlign = ContentAlignment.TopCenter,
+                        AutoEllipsis = true,
+                        Tag = item,
+                        Cursor = Cursors.Hand
+                    };
+                    card.Controls.Add(picture);
+                    card.Controls.Add(nameLabel);
+                    AttachCatalogDrag(card);
+                    AttachCatalogDrag(picture);
+                    AttachCatalogDrag(nameLabel);
+                    catalogGrid.Controls.Add(card);
+                }
+            }
+            UpdateCatalogItemSizes();
+        }
+
+        private void AttachCatalogDrag(Control control)
+        {
+            control.MouseDown += (s, e) =>
+            {
+                if (e.Button != MouseButtons.Left) return;
+                PaletteItem item = (s as Control)?.Tag as PaletteItem;
+                if (item != null) DoDragDrop(item, DragDropEffects.Copy);
+            };
+        }
+
+        private void CatalogDragEnter(object sender, DragEventArgs e)
+        {
+            e.Effect = e.Data.GetDataPresent(typeof(PaletteItem))
+                ? DragDropEffects.Copy
+                : DragDropEffects.None;
+        }
+
+        private void GridInventory_DragDrop(object sender, DragEventArgs e)
+        {
+            PaletteItem item = e.Data.GetData(typeof(PaletteItem)) as PaletteItem;
+            if (item == null) return;
+            Point point = gridInventory.PointToClient(new Point(e.X, e.Y));
+            DataGridView.HitTestInfo hit = gridInventory.HitTest(point.X, point.Y);
+            if (hit.RowIndex < 0) return;
+            ApplyCatalogItemToRow(gridInventory.Rows[hit.RowIndex], item);
+        }
+
+        private void InventoryContextMenu_Opening(object sender, System.ComponentModel.CancelEventArgs e)
+        {
+            PaletteItem sourceItem = FindContextPaletteItem(inventoryContextMenu.SourceControl);
+            if (sourceItem != null)
+                SelectInventoryRowByOffset(sourceItem.Offset);
+
+            int selectedIndex = GetSelectedInventoryIndex();
+            DataGridViewRow selectedRow = gridInventory.SelectedRows.Count > 0
+                ? gridInventory.SelectedRows[0]
+                : gridInventory.CurrentRow;
+            SaveGameParser.InventoryItem selectedItem = selectedRow == null
+                ? null
+                : selectedRow.Tag as SaveGameParser.InventoryItem;
+            bool activeItem = session.IsLoaded && selectedIndex >= 0 &&
+                selectedIndex < session.InventoryCount && selectedIndex < SaveGameParser.INVENTORY_POOL_SIZE &&
+                (selectedItem == null || !selectedItem.IsHeader);
+            bool canInsert = activeItem && session.InventoryCount < SaveGameParser.INVENTORY_POOL_SIZE;
+            menuDuplicateItem.Enabled = canInsert;
+            menuInsertEmptyItem.Enabled = canInsert;
+            menuDeleteItem.Enabled = activeItem;
+            e.Cancel = !activeItem;
+        }
+
+        private static PaletteItem FindContextPaletteItem(Control control)
+        {
+            while (control != null)
+            {
+                PaletteItem item = control.Tag as PaletteItem;
+                if (item != null && item.Offset >= 0) return item;
+                control = control.Parent;
+            }
+            return null;
+        }
+
+        private void SelectInventoryRowByOffset(int offset)
+        {
+            foreach (DataGridViewRow row in gridInventory.Rows)
+            {
+                if (row.Cells["Offset"].Value == null) continue;
+                int rowOffset;
+                if (!int.TryParse(row.Cells["Offset"].Value.ToString().Substring(2),
+                    System.Globalization.NumberStyles.HexNumber, null, out rowOffset) ||
+                    rowOffset != offset)
+                    continue;
+                gridInventory.ClearSelection();
+                row.Selected = true;
+                gridInventory.CurrentCell = row.Cells["IdHex"];
+                return;
+            }
+        }
+
+        private int GetSelectedInventoryIndex()
+        {
+            DataGridViewRow row = gridInventory.SelectedRows.Count > 0
+                ? gridInventory.SelectedRows[0]
+                : gridInventory.CurrentRow;
+            if (row == null || row.Cells["Offset"].Value == null) return -1;
+            int offset;
+            if (!int.TryParse(row.Cells["Offset"].Value.ToString().Substring(2),
+                System.Globalization.NumberStyles.HexNumber, null, out offset) ||
+                offset < session.InventoryOffset)
+                return -1;
+            int relativeOffset = offset - session.InventoryOffset;
+            return relativeOffset % SaveGameParser.INVENTORY_SLOT_SIZE == 0
+                ? relativeOffset / SaveGameParser.INVENTORY_SLOT_SIZE
+                : -1;
+        }
+
+        private void InventoryIcon_DragDrop(object sender, DragEventArgs e)
+        {
+            PaletteItem item = e.Data.GetData(typeof(PaletteItem)) as PaletteItem;
+            Panel target = sender as Panel;
+            PaletteItem current = target == null ? null : target.Tag as PaletteItem;
+            if (item == null || current == null) return;
+            DataGridViewRow row = gridInventory.Rows
+                .Cast<DataGridViewRow>()
+                .FirstOrDefault(candidate =>
+                    candidate.Cells["Offset"].Value != null &&
+                    Convert.ToInt32(candidate.Cells["Offset"].Value.ToString().Substring(2), 16) == current.Offset);
+            if (row != null) ApplyCatalogItemToRow(row, item);
+        }
+
+        private void ApplyCatalogItemToRow(DataGridViewRow row, PaletteItem item)
+        {
+            if (row == null || item == null || row.ReadOnly) return;
+            string offsetText = row.Cells["Offset"].Value == null ? string.Empty : row.Cells["Offset"].Value.ToString();
+            int offset;
+            if (offsetText.Length < 3 || !int.TryParse(offsetText.Substring(2),
+                System.Globalization.NumberStyles.HexNumber, null, out offset) ||
+                !session.IsActiveInventorySlot(offset))
+                return;
+            int currentAmount;
+            if (row.Cells["Amount"].Value == null ||
+                !int.TryParse(row.Cells["Amount"].Value.ToString(), out currentAmount) ||
+                currentAmount < 0)
+            {
+                MessageBox.Show("The selected inventory slot has an invalid amount and cannot be replaced.",
+                    "Invalid Inventory Slot", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return;
+            }
+
+            gridRefreshInProgress = true;
+            try
+            {
+                row.Cells["IdHex"].Value = item.IdHex;
+                string displayName = ItemDatabase.GetName(item.IdHex);
+                DataGridViewComboBoxColumn nameColumn = (DataGridViewComboBoxColumn)gridInventory.Columns["Name"];
+                if (!nameColumn.Items.Contains(displayName)) nameColumn.Items.Add(displayName);
+                row.Cells["Name"].Value = displayName;
+                if (item.IdHex == "0000")
+                    row.Cells["Amount"].Value = 0;
+                else if (currentAmount == 0)
+                    row.Cells["Amount"].Value = 1;
+            }
+            finally
+            {
+                gridRefreshInProgress = false;
+            }
+
+            if (!SyncInventoryRow(row))
+            {
+                MessageBox.Show("The item could not be applied because the inventory slot contains invalid data.",
+                    "Invalid Inventory Slot", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return;
+            }
+            gridInventory.ClearSelection();
+            row.Selected = true;
+            PopulatePalette();
+        }
+
+        private void UpdateCatalogItemSizes()
+        {
+            if (catalogGrid == null || catalogGrid.Controls.Count == 0) return;
+            int availableWidth = Math.Max(100, catalogGrid.ClientSize.Width - 26);
+            int columns = Math.Max(1, availableWidth / 104);
+            int cardWidth = Math.Max(76, (availableWidth - columns * 6) / columns);
+            foreach (Control control in catalogGrid.Controls)
+            {
+                if (control is Panel card)
+                {
+                    card.Width = cardWidth;
+                    if (card.Controls.Count >= 2)
+                    {
+                        Control picture = card.Controls[0];
+                        picture.Left = Math.Max(2, (cardWidth - picture.Width) / 2);
+                        card.Controls[1].Width = cardWidth - 6;
+                        card.Controls[1].Left = 3;
+                    }
+                }
+                else if (control is Label label)
+                {
+                    label.Width = availableWidth;
+                }
+            }
         }
 
         private void BtnBrowse_Click(object sender, EventArgs e)
@@ -330,9 +1239,365 @@ namespace QFG5Extractor.Resources.Save
         {
             txtFilePath.Text = session.IsLoaded ? session.FilePath : string.Empty;
             hasLoadedSave = session.IsLoaded;
-            btnSave.Enabled = session.IsLoaded;
+            btnSave.Enabled = session.IsLoaded && !session.HasIncompleteCharacterRecord;
+            RefreshCharacterControls();
             RefreshGrid();
+            if (flagsScreen != null)
+                flagsScreen.RefreshFromSession();
             if (hasLoadedSave) PopulatePalette();
+        }
+
+        private void RefreshCharacterControls()
+        {
+            RefreshCharacterModelControls();
+            RefreshRoomControls();
+            RefreshCharacterDiagnostics();
+        }
+
+        private void RefreshCharacterDiagnostics()
+        {
+            if (!session.IsLoaded)
+            {
+                characterCoordinatesLabel.Text = "Load a save to view character coordinates.";
+                characterRotationSizeLabel.Text = "Rotation and size are read-only.";
+                saveFileSizeLabel.Text = "Load a save to verify its file size.";
+                return;
+            }
+
+            if (session.TryGetCharacterPlacement(out CharacterPlacementInfo placement))
+            {
+                characterCoordinatesLabel.Text =
+                    "Position (read-only): X: " + FormatPlacementValue(placement.X, placement.XRaw) +
+                    "   Y: " + FormatPlacementValue(placement.Y, placement.YRaw) +
+                    "   Z: " + FormatPlacementValue(placement.Z, placement.ZRaw);
+                characterRotationSizeLabel.Text =
+                    "Rotation (read-only): " + FormatPlacementValue(placement.Rotation, placement.RotationRaw) +
+                    "   Size (read-only): " + FormatPlacementValue(placement.Size, placement.SizeRaw);
+            }
+            else
+            {
+                string reason = session.CharacterPlacementUnavailableReason ??
+                    "The character placement fields could not be read safely.";
+                characterCoordinatesLabel.Text = reason;
+                characterRotationSizeLabel.Text = "Rotation and size are unavailable.";
+            }
+
+            if (session.IsLengthPreserved)
+            {
+                saveFileSizeLabel.Text = "File size: " +
+                    session.OriginalLength.ToString("N0", CultureInfo.InvariantCulture) +
+                    " bytes (matches the loaded file). Save verifies the written size; this does not guarantee the game will load the save.";
+            }
+            else
+            {
+                saveFileSizeLabel.Text = "File size mismatch: loaded " +
+                    session.OriginalLength.ToString("N0", CultureInfo.InvariantCulture) +
+                    " bytes; current data " +
+                    session.Length.ToString("N0", CultureInfo.InvariantCulture) +
+                    " bytes. Saving will be refused until the lengths match.";
+            }
+
+            if (session.HasIncompleteCharacterRecord)
+            {
+                saveFileSizeLabel.Text = "Save is incomplete: only 'Qu' of the character room label remains. Saving is disabled.";
+            }
+        }
+
+        private static string FormatPlacementValue(float value, uint rawValue)
+        {
+            return value.ToString("G9", CultureInfo.InvariantCulture) +
+                " (raw " + rawValue.ToString(CultureInfo.InvariantCulture) + ")";
+        }
+
+        private void RefreshCharacterModelControls()
+        {
+            int modelId = 0;
+            bool canRead = session.IsLoaded && session.TryGetCharacterModelId(out modelId);
+            bool canEdit = canRead && session.CanEditCharacterData;
+            updatingCharacterModelControls = true;
+            numericCharacterModelId.Enabled = canEdit;
+            comboCharacterModelName.Enabled = canEdit;
+            btnApplyCharacterModel.Enabled = canEdit;
+
+            if (canRead)
+            {
+                numericCharacterModelId.Value = modelId;
+                SelectCharacterModelName(modelId);
+                characterModelStatusLabel.Text = !canEdit
+                    ? session.CharacterDataUnavailableReason
+                    : "Current model: " + FormatCharacterModel(modelId) +
+                        (session.IsDirty ? ". Unsaved changes are in memory; click Save." : ". Apply a new ID, then click Save.");
+            }
+            else
+            {
+                numericCharacterModelId.Value = 0;
+                comboCharacterModelName.SelectedIndex = -1;
+                characterModelStatusLabel.Text = session.IsLoaded
+                    ? (session.CharacterModelUnavailableReason ?? "The character model field could not be located safely.")
+                    : "Load a save to change its character model.";
+            }
+            updatingCharacterModelControls = false;
+            if (canRead)
+                characterModelPreview.SetModelId(modelId);
+            else
+                characterModelPreview.ClearModel(session.IsLoaded
+                    ? (session.CharacterModelUnavailableReason ?? "The character model could not be read.")
+                    : "Load a save to preview its character model.");
+        }
+
+        private void RefreshRoomControls()
+        {
+            int roomId = 0;
+            bool canRead = session.IsLoaded && session.TryGetRoomId(out roomId);
+            bool canEdit = canRead && session.CanEditCharacterData;
+            updatingRoomControls = true;
+            numericRoomId.Enabled = canEdit;
+            comboRoomName.Enabled = canEdit;
+            btnApplyRoom.Enabled = canEdit;
+
+            if (canRead)
+            {
+                numericRoomId.Value = roomId;
+                SelectRoomName(roomId);
+                roomStatusLabel.Text = !canEdit
+                    ? session.CharacterDataUnavailableReason
+                    : "Current location: " + FormatRoomLocation(roomId) +
+                        (session.IsDirty ? ". Unsaved changes are in memory; click Save." : ". Select another location, apply it, then click Save.");
+            }
+            else
+            {
+                numericRoomId.Value = 0;
+                comboRoomName.SelectedIndex = -1;
+                roomStatusLabel.Text = session.IsLoaded
+                    ? (session.RoomUnavailableReason ?? "The room field could not be located safely.")
+                    : "Load a save to change its room.";
+            }
+            updatingRoomControls = false;
+            LoadRoomPreview(canRead ? roomId : -1);
+        }
+
+        private void SelectRoomName(int roomId)
+        {
+            comboRoomName.SelectedIndex = -1;
+            for (int i = 0; i < comboRoomName.Items.Count; i++)
+            {
+                RoomLocationInfo location = comboRoomName.Items[i] as RoomLocationInfo;
+                if (location != null && location.Id == roomId)
+                {
+                    comboRoomName.SelectedIndex = i;
+                    return;
+                }
+            }
+        }
+
+        private static string FormatRoomLocation(int roomId)
+        {
+            RoomLocationInfo location;
+            return RoomLocationCatalog.TryGet(roomId, out location)
+                ? location.ToString()
+                : roomId.ToString();
+        }
+
+        private void LoadRoomPreview(int roomId)
+        {
+            if (roomPreview == null || roomPreviewStatusLabel == null)
+                return;
+            if (roomId < 0)
+            {
+                roomPreview.ClearPanorama();
+                roomPreviewStatusLabel.Text = "Load a save to preview its room.";
+                return;
+            }
+
+            string panoramaPath = FindRoomPanoramaPath(roomId);
+            if (panoramaPath == null)
+            {
+                roomPreview.ClearPanorama();
+                roomPreviewStatusLabel.Text = "No extracted panorama found for room " +
+                    roomId + ". Extract its view in Pano Editor.";
+                return;
+            }
+
+            try
+            {
+                double startAngle = 0;
+                double endAngle = 0;
+                string imagePath = FindCompanionImagePath(panoramaPath);
+                bool hasAngles = !string.IsNullOrEmpty(imagePath) &&
+                    PanoConverter.TryReadProjectionAngles(imagePath, out startAngle, out endAngle);
+                using (Bitmap bitmap = new Bitmap(panoramaPath))
+                    if (hasAngles)
+                        roomPreview.SetPanorama(bitmap, panoramaPath, startAngle, endAngle, true);
+                    else
+                        roomPreview.SetPanorama(bitmap, panoramaPath, -Math.PI, Math.PI, false);
+
+                RoomLocationInfo location;
+                string locationName = RoomLocationCatalog.TryGet(roomId, out location)
+                    ? location.Name
+                    : roomId.ToString();
+                roomPreviewStatusLabel.Text = "Room " + roomId + " - " + locationName +
+                    " | " + Path.GetFileName(panoramaPath) +
+                    (hasAngles ? " | IMG angle range" : " | estimated 360-degree view");
+            }
+            catch (Exception ex)
+            {
+                roomPreview.ClearPanorama();
+                roomPreviewStatusLabel.Text = "Could not preview room " + roomId + ": " + ex.Message;
+                Logger.LogError("SaveTab", "Could not load room panorama " +
+                    panoramaPath + ": " + ex.Message);
+            }
+        }
+
+        private static string FindRoomPanoramaPath(int roomId)
+        {
+            string outputFolder = SharedState.GetModsPath("cdn", "NOD");
+            if (!Directory.Exists(outputFolder))
+                return null;
+
+            string preferredPath = Path.Combine(outputFolder,
+                (roomId * 10).ToString(CultureInfo.InvariantCulture) + ".bmp");
+            if (File.Exists(preferredPath))
+                return preferredPath;
+
+            string[] files = Directory.GetFiles(outputFolder)
+                .Where(path => string.Equals(Path.GetExtension(path), ".bmp",
+                    StringComparison.OrdinalIgnoreCase))
+                .OrderBy(path => Path.GetFileName(path), StringComparer.OrdinalIgnoreCase)
+                .ToArray();
+            foreach (string path in files)
+            {
+                int resourceId;
+                if (int.TryParse(Path.GetFileNameWithoutExtension(path), out resourceId) &&
+                    resourceId >= 1000 && resourceId / 10 == roomId)
+                    return path;
+            }
+
+            string directPath = Path.Combine(outputFolder,
+                roomId.ToString(CultureInfo.InvariantCulture) + ".bmp");
+            return File.Exists(directPath) ? directPath : null;
+        }
+
+        private static string FindCompanionImagePath(string panoramaPath)
+        {
+            string imageFolder = SharedState.GetModsPath("cdn", "IMG");
+            if (!Directory.Exists(imageFolder))
+                return null;
+
+            string baseName = Path.GetFileNameWithoutExtension(panoramaPath);
+            return Directory.GetFiles(imageFolder)
+                .FirstOrDefault(path =>
+                    string.Equals(Path.GetExtension(path), ".img", StringComparison.OrdinalIgnoreCase) &&
+                    string.Equals(Path.GetFileNameWithoutExtension(path), baseName,
+                        StringComparison.OrdinalIgnoreCase));
+        }
+
+        private void SelectCharacterModelName(int modelId)
+        {
+            comboCharacterModelName.SelectedIndex = -1;
+            for (int i = 0; i < comboCharacterModelName.Items.Count; i++)
+            {
+                CharacterModelInfo model = comboCharacterModelName.Items[i] as CharacterModelInfo;
+                if (model != null && model.Id == modelId)
+                {
+                    comboCharacterModelName.SelectedIndex = i;
+                    return;
+                }
+            }
+        }
+
+        private static string FormatCharacterModel(int modelId)
+        {
+            string name = CharacterModelCatalog.GetName(modelId);
+            return name == null ? modelId.ToString() : modelId + " - " + name;
+        }
+
+        private void CharacterModelId_ValueChanged(object sender, EventArgs e)
+        {
+            if (updatingCharacterModelControls) return;
+            updatingCharacterModelControls = true;
+            SelectCharacterModelName((int)numericCharacterModelId.Value);
+            updatingCharacterModelControls = false;
+            characterModelStatusLabel.Text = "Selected model: " +
+                FormatCharacterModel((int)numericCharacterModelId.Value) + ". Click Apply Model, then Save.";
+            characterModelPreview.SetModelId((int)numericCharacterModelId.Value);
+        }
+
+        private void CharacterModelName_SelectedIndexChanged(object sender, EventArgs e)
+        {
+            if (updatingCharacterModelControls) return;
+            CharacterModelInfo model = comboCharacterModelName.SelectedItem as CharacterModelInfo;
+            if (model == null) return;
+            updatingCharacterModelControls = true;
+            numericCharacterModelId.Value = model.Id;
+            updatingCharacterModelControls = false;
+            characterModelStatusLabel.Text = "Selected model: " +
+                FormatCharacterModel(model.Id) + ". Click Apply Model, then Save.";
+            characterModelPreview.SetModelId(model.Id);
+        }
+
+        private void ApplyCharacterModel_Click(object sender, EventArgs e)
+        {
+            try
+            {
+                int modelId = (int)numericCharacterModelId.Value;
+                session.SetCharacterModelId(modelId);
+                RefreshCharacterControls();
+                characterModelStatusLabel.Text = "Applied model: " + FormatCharacterModel(modelId) +
+                    (session.IsDirty
+                        ? ". Click Save to write pending changes."
+                        : ". This model is already active; no changes were made.");
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show("Could not change the character model: " + ex.Message,
+                    "Character Model", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                RefreshCharacterModelControls();
+            }
+        }
+
+        private void RoomId_ValueChanged(object sender, EventArgs e)
+        {
+            if (updatingRoomControls) return;
+            int roomId = (int)numericRoomId.Value;
+            updatingRoomControls = true;
+            SelectRoomName(roomId);
+            updatingRoomControls = false;
+            roomStatusLabel.Text = "Selected location: " + FormatRoomLocation(roomId) +
+                ". Click Apply Room, then Save.";
+            LoadRoomPreview(roomId);
+        }
+
+        private void RoomName_SelectedIndexChanged(object sender, EventArgs e)
+        {
+            if (updatingRoomControls) return;
+            RoomLocationInfo location = comboRoomName.SelectedItem as RoomLocationInfo;
+            if (location == null) return;
+            updatingRoomControls = true;
+            numericRoomId.Value = location.Id;
+            updatingRoomControls = false;
+            roomStatusLabel.Text = "Selected location: " + location +
+                ". Click Apply Room, then Save.";
+            LoadRoomPreview(location.Id);
+        }
+
+        private void ApplyRoom_Click(object sender, EventArgs e)
+        {
+            try
+            {
+                int roomId = (int)numericRoomId.Value;
+                session.SetRoomId(roomId);
+                RefreshCharacterControls();
+                roomStatusLabel.Text = "Applied location: " + FormatRoomLocation(roomId) +
+                    (session.IsDirty
+                        ? ". Click Save to write pending changes."
+                        : ". This location is already active; no changes were made.");
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show("Could not change the room: " + ex.Message,
+                    "Character Room", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                RefreshRoomControls();
+            }
         }
 
         public void RestoreActivePath()
@@ -444,7 +1709,10 @@ namespace QFG5Extractor.Resources.Save
                 return false;
             int amount = 0;
             if (row.Cells["Amount"].Value != null)
-                int.TryParse(row.Cells["Amount"].Value.ToString(), out amount);
+            {
+                if (!int.TryParse(row.Cells["Amount"].Value.ToString(), out amount) || amount < 0)
+                    return false;
+            }
             parser.UpdateInventoryItem(offset, idHex, amount);
             return true;
         }
@@ -532,6 +1800,42 @@ namespace QFG5Extractor.Resources.Save
             }
         }
 
+        private void BtnInsertEmpty_Click(object sender, EventArgs e)
+        {
+            if (!CommitPendingEdits())
+            {
+                ShowInvalidItemIdWarning("adding an empty slot");
+                return;
+            }
+
+            int selectedIndex = GetSelectedInventoryIndex();
+            if (selectedIndex < 0) return;
+
+            try
+            {
+                parser.InsertEmptyInventoryItem(selectedIndex);
+            }
+            catch (InvalidDataException ex)
+            {
+                MessageBox.Show("Could not add an empty slot: " + ex.Message,
+                    "Invalid Inventory", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return;
+            }
+
+            RefreshGrid();
+            PopulatePalette();
+            SelectInventoryRow(selectedIndex + 1);
+        }
+
+        private void SelectInventoryRow(int index)
+        {
+            if (index < 0 || index >= gridInventory.Rows.Count) return;
+            gridInventory.ClearSelection();
+            gridInventory.Rows[index].Selected = true;
+            gridInventory.CurrentCell = gridInventory.Rows[index].Cells["IdHex"];
+            gridInventory.FirstDisplayedScrollingRowIndex = Math.Max(0, index - 5);
+        }
+
         private void BtnSave_Click(object sender, EventArgs e)
         {
             try
@@ -541,8 +1845,31 @@ namespace QFG5Extractor.Resources.Save
                     ShowInvalidItemIdWarning("saving");
                     return;
                 }
-                session.Save();
-                MessageBox.Show("Saved successfully.", "Information", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                bool hadChanges = session.IsDirty;
+                bool backupCreated = session.Save();
+                string message;
+                if (!hadChanges)
+                {
+                    message = "No changes to save.";
+                }
+                else if (backupCreated)
+                {
+                    message = "Saved successfully." + Environment.NewLine +
+                        "Verified file size unchanged: " +
+                        session.Length.ToString("N0", CultureInfo.InvariantCulture) + " bytes." +
+                        Environment.NewLine +
+                        "Original save backed up to:" + Environment.NewLine + session.FilePath + ".bak";
+                }
+                else
+                {
+                    message = "Saved successfully. File size verified unchanged: " +
+                        session.Length.ToString("N0", CultureInfo.InvariantCulture) + " bytes." +
+                        Environment.NewLine + "The existing .bak backup was left unchanged.";
+                }
+                RefreshCharacterControls();
+                if (flagsScreen != null)
+                    flagsScreen.RefreshFromSession();
+                MessageBox.Show(message, "Save Editor", MessageBoxButtons.OK, MessageBoxIcon.Information);
             }
             catch (Exception ex)
             {
@@ -552,8 +1879,8 @@ namespace QFG5Extractor.Resources.Save
 
         public void ShowInvalidItemIdWarning(string action)
         {
-            MessageBox.Show("Correct the invalid item ID before " + action + ".",
-                "Invalid Item ID", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            MessageBox.Show("Correct the invalid item ID or amount before " + action + ".",
+                "Invalid Save Data", MessageBoxButtons.OK, MessageBoxIcon.Warning);
         }
 
         private static System.Collections.Generic.Dictionary<string, Image> itemImageCache = new System.Collections.Generic.Dictionary<string, Image>();
@@ -687,7 +2014,14 @@ namespace QFG5Extractor.Resources.Save
 
                 string itemName = row.Cells["Name"].Value == null ? string.Empty : row.Cells["Name"].Value.ToString().Trim();
                 if (itemName.Length == 0) itemName = ItemDatabase.GetName(idHex);
-                section.Items.Add(new PaletteItem { IdHex = idHex.ToUpperInvariant(), Name = itemName });
+                section.Items.Add(new PaletteItem {
+                    IdHex = idHex.ToUpperInvariant(),
+                    Name = itemName,
+                    Category = "Saved",
+                    Offset = sourceItem == null
+                        ? Convert.ToInt32(row.Cells["Offset"].Value.ToString().Substring(2), 16)
+                        : sourceItem.Offset
+                });
             }
 
             return sections;
@@ -719,8 +2053,19 @@ namespace QFG5Extractor.Resources.Save
                         Height = 72,
                         Margin = new Padding(4),
                         BackgroundImage = frameImg,
-                        BackgroundImageLayout = ImageLayout.Stretch
+                        BackgroundImageLayout = ImageLayout.Stretch,
+                        Tag = item,
+                        AllowDrop = true
                     };
+                    pnl.DragEnter += CatalogDragEnter;
+                    pnl.DragOver += (s, e) => {
+                        e.Effect = e.Data.GetDataPresent(typeof(PaletteItem))
+                            ? DragDropEffects.Copy
+                            : DragDropEffects.None;
+                    };
+                    pnl.DragDrop += InventoryIcon_DragDrop;
+                    pnl.ContextMenuStrip = inventoryContextMenu;
+                    pnl.MouseDown += InventoryIcon_MouseDown;
 
                     PictureBox pb = new PictureBox
                     {
@@ -731,13 +2076,12 @@ namespace QFG5Extractor.Resources.Save
                         BackColor = Color.Transparent,
                         SizeMode = PictureBoxSizeMode.Zoom,
                         Image = item.Image,
-                        Tag = item.IdHex + "|" + item.Name
+                        Tag = item
                     };
+                    AttachInventoryIconDrop(pb, pnl);
+                    pb.ContextMenuStrip = inventoryContextMenu;
+                    pb.MouseDown += InventoryIcon_MouseDown;
 
-                    pb.MouseDown += (s, e) => {
-                        if (e.Button == MouseButtons.Left)
-                            pb.DoDragDrop(pb.Tag, DragDropEffects.Copy);
-                    };
                     pb.MouseEnter += (s, e) => {
                         if (hoverNameLabel != null) hoverNameLabel.Text = item.Name;
                     };
@@ -754,14 +2098,31 @@ namespace QFG5Extractor.Resources.Save
             UpdatePaletteItemSizes();
         }
 
+        private void AttachInventoryIconDrop(Control control, Panel target)
+        {
+            control.AllowDrop = true;
+            control.DragEnter += CatalogDragEnter;
+            control.DragOver += (s, e) => {
+                e.Effect = e.Data.GetDataPresent(typeof(PaletteItem))
+                    ? DragDropEffects.Copy
+                    : DragDropEffects.None;
+            };
+            control.DragDrop += (s, e) => InventoryIcon_DragDrop(target, e);
+        }
+
+        private void InventoryIcon_MouseDown(object sender, MouseEventArgs e)
+        {
+            if (e.Button != MouseButtons.Right) return;
+            PaletteItem item = FindContextPaletteItem(sender as Control);
+            if (item != null) SelectInventoryRowByOffset(item.Offset);
+        }
+
         private void SetStatus(string msg, Color color) {
             if (paletteStatusLabel != null) {
                 paletteStatusLabel.Text = msg;
                 paletteStatusLabel.ForeColor = color;
             }
         }
-
-        private System.Collections.Generic.Dictionary<string, string[]> dirCache = new System.Collections.Generic.Dictionary<string, string[]>();
 
         private void ShowItemPreview(string idHex, string name)
         {
@@ -833,29 +2194,61 @@ namespace QFG5Extractor.Resources.Save
             }
         }
 
-        private Image GetItemImage(string idHex, string name)
+        private Image GetItemImage(string idHex, string itemName = null, bool includeSharedFallback = true)
         {
-            lock (itemImageCache)
+            if (includeSharedFallback)
             {
-                return GetItemImageCached(idHex, name);
+                PaletteItem catalogItem = catalogItems.FirstOrDefault(item =>
+                    string.Equals(item.IdHex, idHex, StringComparison.OrdinalIgnoreCase) && item.Image != null);
+                if (catalogItem != null) return catalogItem.Image;
             }
+
+            Image directImage;
+            lock (itemImageCache)
+                directImage = GetItemImageCached(idHex, itemName);
+            if (directImage != null) return directImage;
+
+            string group = GetSharedIconGroup(itemName);
+            if (group == null) return null;
+            ItemDatabase.ItemEntry itemEntry = ItemDatabase.GetItems().FirstOrDefault(item =>
+                string.Equals(item.ID, idHex, StringComparison.OrdinalIgnoreCase));
+            string category = itemEntry == null ? null : NormalizeCatalogCategory(itemEntry.Category);
+            PaletteItem sharedImage = catalogItems.FirstOrDefault(item =>
+                item.Image != null &&
+                item.Category == category &&
+                GetSharedIconGroup(item.Name) == group);
+            return sharedImage == null ? null : sharedImage.Image;
         }
 
-        private Image GetItemImageCached(string idHex, string name)
+        private Image GetItemImageCached(string idHex, string itemName = null)
         {
-            // Priority 1: Manual Mapping
-            try {
-                string mappingPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "icon_mapping.dat");
-                if (File.Exists(mappingPath)) {
+            // Explicit user mappings remain available as overrides.
+            string mappingPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "icon_mapping.dat");
+            if (File.Exists(mappingPath))
+            {
+                try
+                {
                     string[] lines = File.ReadAllLines(mappingPath);
-                    foreach (string line in lines) {
+                    foreach (string line in lines)
+                    {
                         string[] parts = line.Split('|');
-                        if (parts.Length == 2 && parts[0] == idHex.ToUpper() && File.Exists(parts[1])) {
-                            return Image.FromFile(parts[1]);
+                        if (parts.Length == 2 && string.Equals(parts[0], idHex, StringComparison.OrdinalIgnoreCase))
+                        {
+                            if (!File.Exists(parts[1]))
+                            {
+                                Logger.Log("SaveTab mapped item image not found: " + parts[1]);
+                                break;
+                            }
+                            using (Image source = Image.FromFile(parts[1]))
+                                return new Bitmap(source);
                         }
                     }
                 }
-            } catch { }
+                catch (Exception ex)
+                {
+                    Logger.Log("SaveTab could not read item image mappings: " + ex.Message);
+                }
+            }
 
             if (string.IsNullOrEmpty(inventoryPath) || !Directory.Exists(inventoryPath)) {
                 return null;
@@ -864,67 +2257,41 @@ namespace QFG5Extractor.Resources.Save
             string cacheKey = idHex.ToUpper();
             if (itemImageCache.ContainsKey(cacheKey)) return itemImageCache[cacheKey];
 
-            var itemEntry = ItemDatabase.GetItems().Find(it => it.ID == idHex.ToUpper());
-            string indexFileName = "";
-            
-            if (itemEntry != null && itemEntry.CategoryIndex >= 0) {
-                int baseVal = 0;
-                if (itemEntry.Category == "Equipment") baseVal = 101101;
-                else if (itemEntry.Category == "Items") baseVal = 101129;
-                else if (itemEntry.Category == "Spells") baseVal = 101500;
-                
-                if (baseVal > 0) indexFileName = (baseVal + itemEntry.CategoryIndex).ToString();
-            }
+            if (string.IsNullOrEmpty(idHex) || idHex.Length != 4 ||
+                !Uri.IsHexDigit(idHex[0]) || !Uri.IsHexDigit(idHex[1]) ||
+                !Uri.IsHexDigit(idHex[2]) || !Uri.IsHexDigit(idHex[3]))
+                return null;
 
-            string[] subdirs = { "Items", "Spells", "Equipment" };
-            foreach (var sub in subdirs)
+            byte lowByte = Convert.ToByte(idHex.Substring(0, 2), 16);
+            byte highByte = Convert.ToByte(idHex.Substring(2, 2), 16);
+            int spriteId = 0x10000 | lowByte | (highByte << 8);
+            string fileName = spriteId.ToString(System.Globalization.CultureInfo.InvariantCulture);
+            string[] extensions = { ".png", ".bmp" };
+            string[] directories = { "Items", "Spells", "Equipment" };
+            foreach (string directoryName in directories)
             {
-                string dir = Path.Combine(inventoryPath, sub);
-                if (!Directory.Exists(dir)) continue;
-
-                int idDec = -1;
-                bool isNumeric = int.TryParse(idHex, System.Globalization.NumberStyles.Integer, null, out idDec);
-                if (!isNumeric) {
-                    try {
-                        if (idHex.StartsWith("0x", StringComparison.OrdinalIgnoreCase))
-                            idDec = Convert.ToInt32(idHex.Substring(2), 16);
-                        else
-                            idDec = Convert.ToInt32(idHex, 16);
-                    } catch { }
-                }
-                
-                string idDecStr = idDec.ToString();
-                // User requirement: Priority for category-indexed .png
-                string[] patterns = { 
-                    $"{indexFileName}.png", $"{indexFileName}.bmp",
-                    $"{idDecStr}.png", $"{idHex}.png", $"{name}.png",
-                    $"{idDecStr}.bmp", $"{idHex}.bmp", $"{name}.bmp"
-                };
-
-                foreach (var p in patterns)
+                string directory = Path.Combine(inventoryPath, directoryName);
+                foreach (string extension in extensions)
                 {
-                    string full = Path.Combine(dir, p);
-                    if (File.Exists(full)) {
-                        try { 
-                            Image img = Image.FromFile(full);
-                            itemImageCache[cacheKey] = img;
-                            return img; 
-                        } catch { }
-                    }
-                    
-                    // Case-insensitive/Fuzzy fallback
-                    try {
-                        if (!dirCache.ContainsKey(dir)) dirCache[dir] = Directory.GetFiles(dir, "*.*");
-                        string[] matches = dirCache[dir];
-                        foreach(var m in matches) {
-                            string fn = Path.GetFileName(m).ToLower();
-                            if (fn.Contains(idDecStr.ToLower() + ".") || fn.Contains(idHex.ToLower() + ".") || fn.Contains(name.ToLower().Replace(" ", ""))) {
-                                Image img = Image.FromFile(m);
-                                itemImageCache[cacheKey] = img;
-                                return img;
-                            }
+                    string imagePath = Path.Combine(directory, fileName + extension);
+                    if (!File.Exists(imagePath)) continue;
+                    try
+                    {
+                        using (Image source = Image.FromFile(imagePath))
+                        {
+                            Image image = new Bitmap(source);
+                            if (string.Equals(idHex, "298B", StringComparison.OrdinalIgnoreCase) ||
+                                (!string.IsNullOrEmpty(itemName) &&
+                                 itemName.IndexOf("Tinderbox", StringComparison.OrdinalIgnoreCase) >= 0))
+                                image.RotateFlip(RotateFlipType.Rotate90FlipNone);
+                            itemImageCache[cacheKey] = image;
+                            return image;
                         }
-                    } catch { }
+                    }
+                    catch (Exception ex)
+                    {
+                        Logger.Log("SaveTab could not load item sprite " + imagePath + ": " + ex.Message);
+                    }
                 }
             }
             return null;

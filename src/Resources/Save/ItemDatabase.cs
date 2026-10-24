@@ -12,7 +12,6 @@ namespace QFG5Extractor.Resources.Save
             public string ID { get; set; }
             public string Name { get; set; }
             public string Category { get; set; }
-            public int CategoryIndex { get; set; }
             public override string ToString() => Name;
         }
 
@@ -45,61 +44,63 @@ namespace QFG5Extractor.Resources.Save
             // Add a default "Empty Slot" entry
             items.Add(new ItemEntry { ID = "0000", Name = "Empty Slot" });
 
-            string[] searchPaths = { 
-                "objects.dat",
-                "../objects.dat",
-                "../../objects.dat",
-                "../../../../Resources/QG5Edit/objects.dat",
-                "../../../Resources/QG5Edit/objects.dat",
-                "../../Resources/QG5Edit/objects.dat",
-                "../QG5Edit/objects.dat",
-                "../../QG5Edit/objects.dat",
-                "../../../QG5Edit/objects.dat",
-                "/home/vandali/Desktop/QFG5-Tool/Resources/QG5Edit/objects.dat",
-                "/home/vandali/.wine32/drive_c/Program Files/QFG5-RE/QG5Edit/objects.dat"
+            string objectsDatPath = FindObjectsDatPath();
+            if (objectsDatPath != null)
+            {
+                var lines = File.ReadAllLines(objectsDatPath);
+                List<ItemEntry> loadedItems = new List<ItemEntry>();
+                for (int i = 0; i + 1 < lines.Length; i += 2)
+                {
+                    string id = lines[i].Trim();
+                    string name = lines[i + 1].Trim();
+                    if (!string.IsNullOrEmpty(id) && !string.IsNullOrEmpty(name))
+                    {
+                        string cat = "Other";
+                        string suffix = id.EndsWith("8A") ? "8A" : (id.EndsWith("8B") ? "8B" : (id.EndsWith("8C") ? "8C" : ""));
+                        if (suffix == "8A") cat = "Equipment";
+                        else if (suffix == "8B") cat = "Items";
+                        else if (suffix == "8C") cat = "Spells";
+
+                        loadedItems.Add(new ItemEntry { ID = id, Name = name, Category = cat });
+                    }
+                }
+
+                items.AddRange(loadedItems);
+                loaded = true;
+                Logger.LogInfo("ItemDatabase: Loaded " + items.Count + " items from " + objectsDatPath);
+                return;
+            }
+
+            loaded = true;
+            Logger.LogWarning("ItemDatabase: objects.dat was not found beside the application or in a parent Resources/QG5Edit folder; inventory item names will be unavailable.");
+        }
+
+        private static string FindObjectsDatPath()
+        {
+            string[] startingDirectories = {
+                AppDomain.CurrentDomain.BaseDirectory,
+                Environment.CurrentDirectory
             };
 
-            foreach (string p in searchPaths)
+            foreach (string startingDirectory in startingDirectories)
             {
-                if (File.Exists(p))
+                DirectoryInfo directory = new DirectoryInfo(Path.GetFullPath(startingDirectory));
+                while (directory != null)
                 {
-                    var lines = File.ReadAllLines(p);
-                    // Sorting by ID alphabetically within categories is likely how the icons are mapped
-                    List<ItemEntry> loadedItems = new List<ItemEntry>();
-                    for (int i = 0; i + 1 < lines.Length; i += 2)
-                    {
-                        string id = lines[i].Trim();
-                        string name = lines[i+1].Trim();
-                        if (!string.IsNullOrEmpty(id) && !string.IsNullOrEmpty(name))
-                        {
-                            string cat = "Other";
-                            string suffix = id.EndsWith("8A") ? "8A" : (id.EndsWith("8B") ? "8B" : (id.EndsWith("8C") ? "8C" : ""));
-                            if (suffix == "8A") cat = "Equipment";
-                            else if (suffix == "8B") cat = "Items";
-                            else if (suffix == "8C") cat = "Spells";
+                    string besideApplication = Path.Combine(directory.FullName, "objects.dat");
+                    if (File.Exists(besideApplication))
+                        return besideApplication;
 
-                            loadedItems.Add(new ItemEntry { ID = id, Name = name, Category = cat });
-                        }
-                    }
+                    string projectResource = Path.Combine(directory.FullName,
+                        Path.Combine("Resources", Path.Combine("QG5Edit", "objects.dat")));
+                    if (File.Exists(projectResource))
+                        return projectResource;
 
-                    // Sorting removed to maintain original file order for icon mapping
-                    // loadedItems.Sort((a, b) => string.Compare(a.ID, b.ID, StringComparison.OrdinalIgnoreCase));
-
-                    int eqIdx = 0, itIdx = 0, spIdx = 0;
-                    foreach (var it in loadedItems)
-                    {
-                        if (it.Category == "Equipment") it.CategoryIndex = eqIdx++;
-                        else if (it.Category == "Items") it.CategoryIndex = itIdx++;
-                        else if (it.Category == "Spells") it.CategoryIndex = spIdx++;
-                        else it.CategoryIndex = -1;
-                        
-                        items.Add(it);
-                    }
-                    loaded = true;
-                    Logger.LogInfo($"ItemDatabase: Loaded {items.Count} items from {p}");
-                    break;
+                    directory = directory.Parent;
                 }
             }
+
+            return null;
         }
     }
 }

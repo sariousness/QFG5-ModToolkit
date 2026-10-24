@@ -9,11 +9,17 @@ namespace QFG5Extractor.Resources.Model
     {
         public static void importBMPfile(string inputFileNameBase, byte[] mdlTextureData, ref byte[] bitmapPalette, out byte[] newmdlTextureData)
         {
+            if (mdlTextureData == null || mdlTextureData.Length < Constants.BYTES_PER_INT)
+                throw new InvalidDataException("The MDL texture section is missing or incomplete.");
             byte[] mdlBitmapHeaderType = new byte[] { mdlTextureData[0], mdlTextureData[1], mdlTextureData[2], mdlTextureData[3] };
             int mdlBitmapType = (int)((BitConverter.ToUInt32(mdlBitmapHeaderType, 0)) / Constants.MDL_BITMAP_HEADER_TYPE_MULTIPLIER) - 1;
+            if (mdlBitmapType < 0 || mdlBitmapType > 31)
+                throw new InvalidDataException("The MDL contains an unsupported bitmap level count.");
 
             int numberOfBytesOfMultiBitmapHeaderAdditionSpace = Constants.BYTES_PER_INT * mdlBitmapType;
             byte[] mdlBitmapHeader = new byte[Constants.BYTES_PER_INT + numberOfBytesOfMultiBitmapHeaderAdditionSpace];
+            if (mdlBitmapHeader.Length > mdlTextureData.Length)
+                throw new InvalidDataException("The MDL bitmap header is truncated.");
             for (int i = 0; i < Constants.BYTES_PER_INT; i++)
             {
                 mdlBitmapHeader[i] = mdlTextureData[i];
@@ -40,16 +46,26 @@ namespace QFG5Extractor.Resources.Model
 
                 if (!File.Exists(inputFileNameSubBitmap))
                 {
-                    continue;
+                    throw new FileNotFoundException("A BMP is required for every MDL texture level.", inputFileNameSubBitmap);
                 }
 
                 using (BinaryReader bReader = new BinaryReader(File.Open(inputFileNameSubBitmap, FileMode.Open)))
                 {
+                    if (bReader.BaseStream.Length < 54 + bitmapPalette.Length)
+                        throw new InvalidDataException("The replacement BMP is incomplete: " + inputFileNameSubBitmap);
+                    bReader.BaseStream.Seek(10, SeekOrigin.Begin);
+                    int pixelDataOffset = bReader.ReadInt32();
                     bReader.BaseStream.Seek(18, SeekOrigin.Begin);
-                    byte[] BMPwidthByteArray = bReader.ReadBytes(Constants.BYTES_PER_INT);
-                    byte[] BMPheightByteArray = bReader.ReadBytes(Constants.BYTES_PER_INT);
-                    int newSubBitmapwidth = (int)BitConverter.ToUInt32(BMPwidthByteArray, 0);
-                    int newSubBitmapheight = (int)BitConverter.ToUInt32(BMPheightByteArray, 0);
+                    int newSubBitmapwidth = bReader.ReadInt32();
+                    int newSubBitmapheight = bReader.ReadInt32();
+                    bReader.BaseStream.Seek(28, SeekOrigin.Begin);
+                    int bitsPerPixel = bReader.ReadUInt16();
+                    int compression = bReader.ReadInt32();
+                    if (newSubBitmapwidth <= 0 || newSubBitmapheight <= 0 ||
+                        bitsPerPixel != 8 || compression != 0 ||
+                        pixelDataOffset < 54 + bitmapPalette.Length ||
+                        pixelDataOffset > bReader.BaseStream.Length)
+                        throw new InvalidDataException("The replacement BMP pixel data is invalid: " + inputFileNameSubBitmap);
 
                     byte[] newSubBitmapHeader = new byte[Constants.SUBBITMAP_HEADER_LENGTH];
                     byte[] mdlBitmapHeader32bitWidthValueToInsert;
@@ -73,11 +89,23 @@ namespace QFG5Extractor.Resources.Model
                     newSubBitmapHeaderArray[subBitmap] = newSubBitmapHeader;
                     newSubBitmapHeaderArrayTotalContentsSize += newSubBitmapHeader.Length;
 
-                    bReader.BaseStream.Seek(58, SeekOrigin.Begin);
+                    bReader.BaseStream.Seek(54, SeekOrigin.Begin);
                     byte[] newSubBitmapPalette = bReader.ReadBytes(bitmapPalette.Length);
-                    bReader.BaseStream.Seek(1, SeekOrigin.Current);
+                    int bmpRowStride = checked(((newSubBitmapwidth + 3) / 4) * 4);
+                    long bmpPixelDataLength = checked((long)bmpRowStride * newSubBitmapheight);
+                    if (newSubBitmapPalette.Length != bitmapPalette.Length ||
+                        pixelDataOffset + bmpPixelDataLength > bReader.BaseStream.Length)
+                        throw new InvalidDataException("The replacement BMP data is truncated: " + inputFileNameSubBitmap);
 
-                    byte[] newSubBitmapPixelData = bReader.ReadBytes(newSubBitmapwidth * newSubBitmapheight);
+                    bReader.BaseStream.Seek(pixelDataOffset, SeekOrigin.Begin);
+                    byte[] bmpPixelRows = bReader.ReadBytes((int)bmpPixelDataLength);
+                    int pixelDataSize = checked(newSubBitmapwidth * newSubBitmapheight);
+                    byte[] newSubBitmapPixelData = new byte[pixelDataSize];
+                    for (int row = 0; row < newSubBitmapheight; row++)
+                        Array.Copy(bmpPixelRows, row * bmpRowStride, newSubBitmapPixelData, row * newSubBitmapwidth, newSubBitmapwidth);
+                    if (newSubBitmapPalette.Length != bitmapPalette.Length ||
+                        newSubBitmapPixelData.Length != pixelDataSize)
+                        throw new InvalidDataException("The replacement BMP data is truncated: " + inputFileNameSubBitmap);
                     newSubBitmapPixelDataArray[subBitmap] = newSubBitmapPixelData;
                     newSubBitmapPixelDataArrayTotalContentsSize += newSubBitmapPixelData.Length;
 
@@ -115,10 +143,10 @@ namespace QFG5Extractor.Resources.Model
 
         public static void exportBMPfile(string inputFileName, string outputFileNameBase)
         {
-            int mdlPaletteAddress = Constants.MDL_HEADER_BITMAPPALETTE_ADDRESS;
+            int mdlPaletteAddress = Constants.MDL_DISPLAY_PALETTE_ADDRESS;
             int mdlBitmapHeaderAddress;
 
-            byte[] mdlPalette = new byte[Constants.BITMAP_PALETTE_LENGTH];
+            byte[] mdlPalette = new byte[Constants.BITMAP_DISPLAY_PALETTE_LENGTH];
 
             using (BinaryReader bReader = new BinaryReader(File.Open(inputFileName, FileMode.Open)))
             {
@@ -173,29 +201,38 @@ namespace QFG5Extractor.Resources.Model
 
         private static void writeBMP(string outputFileName, byte[] mdlPalette, byte[] pixelData, int bitmapwidth, int bitmapheight)
         {
+            int rowStride = ((bitmapwidth + 3) / 4) * 4;
+            int imageSize = rowStride * bitmapheight;
             using (BinaryWriter bWriter = new BinaryWriter(File.Open(outputFileName, FileMode.Create)))
             {
                 byte[] temp3 = new byte[] { 0x42, 0x4d };
                 bWriter.Write(temp3);
-                bWriter.Write(54 + (mdlPalette.Length + 5) + pixelData.Length);
+                bWriter.Write(54 + 1024 + imageSize);
                 bWriter.Write((ushort)0);
                 bWriter.Write((ushort)0);
-                bWriter.Write(54 + (mdlPalette.Length + 5));
+                bWriter.Write(54 + 1024);
                 bWriter.Write(40);
                 bWriter.Write(bitmapwidth);
                 bWriter.Write(bitmapheight);
                 bWriter.Write((ushort)1);
                 bWriter.Write((ushort)8);
                 bWriter.Write(0);
-                bWriter.Write(bitmapwidth * bitmapheight);
+                bWriter.Write(imageSize);
                 bWriter.Write(2834);
                 bWriter.Write(2834);
-                bWriter.Write(0);
-                bWriter.Write(0);
+                bWriter.Write(256);
                 bWriter.Write(0);
                 bWriter.Write(mdlPalette);
-                bWriter.Write((byte)0);
-                bWriter.Write(pixelData);
+                for (int i = 0; i < 1024 - mdlPalette.Length; i++)
+                {
+                    bWriter.Write((byte)0);
+                }
+                for (int row = 0; row < bitmapheight; row++)
+                {
+                    bWriter.Write(pixelData, row * bitmapwidth, bitmapwidth);
+                    for (int padding = bitmapwidth; padding < rowStride; padding++)
+                        bWriter.Write((byte)0);
+                }
             }
         }
 

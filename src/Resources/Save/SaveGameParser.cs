@@ -39,58 +39,6 @@ namespace QFG5Extractor.Resources.Save
             }
         }
 
-        internal static int FindInventoryOffset(int length, Func<int, byte> readByte)
-        {
-            int bestStart = -1;
-            int bestCount = 0;
-
-            // Scan with all 16 possible alignments
-            for (int align = 0; align < 16; align++)
-            {
-                int currentCluster = 0;
-                int clusterStart = -1;
-
-                for (int i = align; i < length - INVENTORY_SLOT_SIZE; i += INVENTORY_SLOT_SIZE)
-                {
-                    string idHex = readByte(i).ToString("X2") + readByte(i + 1).ToString("X2");
-                    int amount = readByte(i + 4) | (readByte(i + 5) << 8) | (readByte(i + 6) << 16) | (readByte(i + 7) << 24);
-
-                    // Pattern: Valid ID or all zeros (empty slot), and usually [01 00] at +2/+3 if not empty
-                    bool isValidId = idHex != "0000" && ItemDatabase.GetItems().Exists(it => it.ID == idHex);
-                    bool isEmpty = (idHex == "0000" && amount == 0);
-                    bool hasIndicator = (readByte(i + 2) == 0x01 && readByte(i + 3) == 0x00) || isEmpty;
-
-                    if ((isValidId && hasIndicator) || (isEmpty && currentCluster > 0)) // Only count empty slots if we're already in a cluster
-                    {
-                        if (currentCluster == 0 && isValidId) { 
-                            clusterStart = i;
-                            currentCluster++;
-                        } else if (currentCluster > 0) {
-                            currentCluster++;
-                        }
-                    }
-                    else
-                    {
-                        if (currentCluster > bestCount)
-                        {
-                            bestCount = currentCluster;
-                            bestStart = clusterStart;
-                        }
-                        currentCluster = 0;
-                    }
-                }
-
-                if (currentCluster > bestCount)
-                {
-                    bestCount = currentCluster;
-                    bestStart = clusterStart;
-                }
-            }
-
-            // Fallback to 0x0110 if nothing found, though scanning should work
-            return bestCount > 5 ? bestStart : 0x0110;
-        }
-
         public class InventoryItem
         {
             public int Offset { get; set; }
@@ -203,36 +151,46 @@ namespace QFG5Extractor.Resources.Save
 
         public void InsertInventoryItem(int index)
         {
-            // Limit shifting to the 120-slot pool
-            int POOL_SIZE = INVENTORY_POOL_SIZE;
-            int detectedOffset = session.InventoryOffset;
-            if (index < 0 || index >= POOL_SIZE - 1 ||
-                !session.HasInventoryRange(detectedOffset, POOL_SIZE))
-                throw new InvalidDataException("The selected inventory range cannot safely accommodate an inserted slot.");
-
+            int detectedOffset = MakeRoomForInventoryItem(index);
             int currentResId = session.GetByte(detectedOffset + index * INVENTORY_SLOT_SIZE + 8);
-
-            // Shift all items from index+1 to POOL_SIZE-1 down
-            for (int i = POOL_SIZE - 1; i > index + 1; i--)
-            {
-                int src = detectedOffset + (i - 1) * INVENTORY_SLOT_SIZE;
-                int dst = detectedOffset + i * INVENTORY_SLOT_SIZE;
-                session.CopyWithin(src, dst, INVENTORY_SLOT_SIZE);
-            }
-
-            // Set the new slot (index + 1) to a duplicate of the current item
             int targetOffset = detectedOffset + (index + 1) * INVENTORY_SLOT_SIZE;
             session.CopyWithin(detectedOffset + index * INVENTORY_SLOT_SIZE, targetOffset, INVENTORY_SLOT_SIZE);
-            
-            // Ensure the Reservoir ID is preserved
             session.SetByte(targetOffset + 8, (byte)currentResId);
+            session.AdjustInventoryCount(1);
+        }
+
+        public void InsertEmptyInventoryItem(int index)
+        {
+            int detectedOffset = MakeRoomForInventoryItem(index);
+            int reservoirId = session.GetByte(detectedOffset + index * INVENTORY_SLOT_SIZE + 8);
+            int targetOffset = detectedOffset + (index + 1) * INVENTORY_SLOT_SIZE;
+            session.Clear(targetOffset, INVENTORY_SLOT_SIZE);
+            session.SetByte(targetOffset + 8, (byte)reservoirId);
+            session.AdjustInventoryCount(1);
+        }
+
+        private int MakeRoomForInventoryItem(int index)
+        {
+            int detectedOffset = session.InventoryOffset;
+            if (index < 0 || index >= session.InventoryCount ||
+                session.InventoryCount >= INVENTORY_POOL_SIZE ||
+                !session.HasInventoryRange(detectedOffset, INVENTORY_POOL_SIZE))
+                throw new InvalidDataException("The selected inventory range cannot safely accommodate an inserted slot.");
+
+            for (int i = INVENTORY_POOL_SIZE - 1; i > index + 1; i--)
+            {
+                int sourceOffset = detectedOffset + (i - 1) * INVENTORY_SLOT_SIZE;
+                int targetOffset = detectedOffset + i * INVENTORY_SLOT_SIZE;
+                session.CopyWithin(sourceOffset, targetOffset, INVENTORY_SLOT_SIZE);
+            }
+            return detectedOffset;
         }
 
         public void DeleteInventoryItem(int index)
         {
             int POOL_SIZE = INVENTORY_POOL_SIZE;
             int detectedOffset = session.InventoryOffset;
-            if (index < 0 || index >= POOL_SIZE ||
+            if (index < 0 || index >= session.InventoryCount ||
                 !session.HasInventoryRange(detectedOffset, POOL_SIZE))
                 throw new InvalidDataException("The selected inventory range cannot safely accommodate a deleted slot.");
 
@@ -247,6 +205,7 @@ namespace QFG5Extractor.Resources.Save
             // Zero out the last slot
             int lastOffset = detectedOffset + (POOL_SIZE - 1) * INVENTORY_SLOT_SIZE;
             session.Clear(lastOffset, INVENTORY_SLOT_SIZE);
+            session.AdjustInventoryCount(-1);
         }
     }
 }

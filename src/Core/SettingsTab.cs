@@ -11,8 +11,6 @@ namespace QFG5Extractor.Core
     {
         private QFG5PathField txtBaseDataPath;
         private QFG5PathField txtExtractionPath;
-        private QFG5PathField txtModdedPath;
-        private QFG5PathField txtGamePath;
         private QFG5Button btnSave;
         private QFG5Button btnStartGame;
         private QFG5Button btnRestore;
@@ -35,9 +33,9 @@ namespace QFG5Extractor.Core
                 Padding = new Padding(QFG5Layout.PagePadding)
             };
             mainLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 50)); // Title
-            mainLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 210)); // Collapsible path settings
+            mainLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 120)); // Main path settings
             mainLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 45)); // AutoSave checkbox
-            mainLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 76)); // Actions and status
+            mainLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 94)); // Actions and status
             mainLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 100)); // Filler
 
             Label lblTitle = new Label {
@@ -54,24 +52,25 @@ namespace QFG5Extractor.Core
             {
                 Dock = DockStyle.Fill,
                 ColumnCount = 1,
-                RowCount = 4,
+                RowCount = 2,
                 Margin = new Padding(0)
             };
             pathRows.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100f));
-            for (int i = 0; i < 4; i++)
+            for (int i = 0; i < 2; i++)
                 pathRows.RowStyles.Add(new RowStyle(SizeType.Absolute, 45));
-            pathRows.Controls.Add(CreatePathRow("Game Data Path:", SharedState.BaseDataPath, out txtBaseDataPath), 0, 0);
-            pathRows.Controls.Add(CreatePathRow("Extraction Path:", SharedState.ExtractionPath, out txtExtractionPath), 0, 1);
-            pathRows.Controls.Add(CreatePathRow("Modded Path:", SharedState.ModdedFilesPath, out txtModdedPath), 0, 2);
-            pathRows.Controls.Add(CreatePathRow("Game Location:", SharedState.GamePath, out txtGamePath), 0, 3);
-            mainLayout.Controls.Add(new QFG5CollapsibleSection("APPLICATION PATHS", pathRows, 210), 0, 1);
+            pathRows.Controls.Add(CreatePathRow("Game DATA Folder:", SharedState.BaseDataPath, out txtBaseDataPath), 0, 0);
+            pathRows.Controls.Add(CreatePathRow("Mods / Extracted Data:", SharedState.ExtractionPath, out txtExtractionPath), 0, 1);
+            ToolTip pathToolTip = new ToolTip();
+            pathToolTip.SetToolTip(txtBaseDataPath, "Select the game's DATA folder itself; it can contain SPK archives or extracted cdn and hdnw folders.");
+            pathToolTip.SetToolTip(txtExtractionPath, "Asset tools create matching cdn and hdnw folders beneath this destination.");
+            mainLayout.Controls.Add(new QFG5CollapsibleSection("GAME AND MOD PATHS", pathRows, 120), 0, 1);
             
             chkAutoSave = new CheckBox {
                 Text = "Save Settings on Change",
                 ForeColor = QFG5Theme.ColorTextPrimary,
                 Font = QFG5Theme.BodyFont,
                 AutoSize = true,
-                Margin = new Padding(130, 10, 0, 0)
+                Margin = new Padding(190, 10, 0, 0)
             };
             mainLayout.Controls.Add(chkAutoSave, 0, 2);
 
@@ -79,27 +78,28 @@ namespace QFG5Extractor.Core
                 Dock = DockStyle.Fill,
                 ColumnCount = 4,
                 RowCount = 2,
-                Padding = new Padding(0, 18, 0, 0)
+                Padding = new Padding(0)
             };
-            pnlBottom.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 160));
-            pnlBottom.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 160));
-            pnlBottom.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 190));
+            pnlBottom.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 170));
+            pnlBottom.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 170));
+            pnlBottom.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 210));
             pnlBottom.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
             pnlBottom.RowStyles.Add(new RowStyle(SizeType.Absolute, 38));
             pnlBottom.RowStyles.Add(new RowStyle(SizeType.Absolute, 32));
             
-            btnSave = new QFG5Button { Text = "Save Settings", Width = 150, Height = 30, Dock = DockStyle.Fill, Margin = new Padding(0, 0, 8, 4) };
+            btnSave = new QFG5Button { Text = "Save Settings", Width = 160, Height = 30, Dock = DockStyle.Fill, Margin = new Padding(0, 0, 8, 4) };
             btnSave.Click += (s, e) => {
                 if (SaveAllSettings())
                     MessageBox.Show("Settings saved to settings.cfg.", "Success");
                 else
-                    MessageBox.Show("Settings could not be saved to settings.cfg. The selected paths remain active for this session.", "Save Failed", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                    if (lblSettingsStatus.Text.StartsWith("Settings could not be saved", StringComparison.Ordinal))
+                        MessageBox.Show(lblSettingsStatus.Text, "Save Failed", MessageBoxButtons.OK, MessageBoxIcon.Error);
             };
             
-            btnStartGame = new QFG5Button { Text = "START GAME", Width = 150, Height = 30, Dock = DockStyle.Fill, Margin = new Padding(0, 0, 8, 4) };
+            btnStartGame = new QFG5Button { Text = "START GAME", Width = 160, Height = 30, Dock = DockStyle.Fill, Margin = new Padding(0, 0, 8, 4) };
             btnStartGame.Click += BtnStartGame_Click;
 
-            btnRestore = new QFG5Button { Text = "RESTORE ORIGINALS", Width = 180, Height = 30, Dock = DockStyle.Fill, Margin = new Padding(0, 0, 8, 4) };
+            btnRestore = new QFG5Button { Text = "RESTORE ORIGINALS", Width = 200, Height = 30, Dock = DockStyle.Fill, Margin = new Padding(0, 0, 8, 4) };
             btnRestore.Click += BtnRestore_Click;
 
             lblSettingsStatus = new Label {
@@ -118,19 +118,18 @@ namespace QFG5Extractor.Core
             mainLayout.Controls.Add(pnlBottom, 0, 3);
 
             // Events for AutoSave
-            txtBaseDataPath.TextChanged += (s, e) => { if(chkAutoSave.Checked) SaveAllSettings(); };
-            txtExtractionPath.TextChanged += (s, e) => { if(chkAutoSave.Checked) SaveAllSettings(); };
-            txtModdedPath.TextChanged += (s, e) => { if(chkAutoSave.Checked) SaveAllSettings(); };
-            txtGamePath.TextChanged += (s, e) => { if(chkAutoSave.Checked) SaveAllSettings(); };
+            txtBaseDataPath.TextChanged += (s, e) => { if (chkAutoSave.Checked) SaveAllSettings(); };
+            txtExtractionPath.TextChanged += (s, e) => { if (chkAutoSave.Checked) SaveAllSettings(); };
 
             this.Controls.Add(mainLayout);
         }
 
         private void BtnStartGame_Click(object sender, EventArgs e)
         {
-            string gamePath = txtGamePath.Text;
+            string gameDataPath = txtBaseDataPath.Text.Trim();
+            string gamePath = Directory.Exists(gameDataPath) ? Directory.GetParent(gameDataPath)?.FullName : null;
             if (string.IsNullOrEmpty(gamePath) || !Directory.Exists(gamePath)) {
-                MessageBox.Show("Please specify a valid Game Location first.");
+                MessageBox.Show("Please set a valid Game DATA Folder first.");
                 return;
             }
 
@@ -168,9 +167,10 @@ namespace QFG5Extractor.Core
 
         private void BtnRestore_Click(object sender, EventArgs e)
         {
-            string gamePath = txtGamePath.Text;
+            string gameDataPath = txtBaseDataPath.Text.Trim();
+            string gamePath = Directory.Exists(gameDataPath) ? Directory.GetParent(gameDataPath)?.FullName : null;
             if (string.IsNullOrEmpty(gamePath) || !Directory.Exists(gamePath)) {
-                MessageBox.Show("Please specify a valid Game Location first.");
+                MessageBox.Show("Please set a valid Game DATA Folder first.");
                 return;
             }
 
@@ -202,7 +202,7 @@ namespace QFG5Extractor.Core
         private Control CreatePathRow(string label, string value, out QFG5PathField field)
         {
             QFG5TableLayoutPanel row = new QFG5TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 3, RowCount = 1 };
-            row.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 130));
+            row.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 210));
             row.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
             row.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 100));
 
@@ -230,14 +230,27 @@ namespace QFG5Extractor.Core
 
         private bool SaveAllSettings()
         {
-            SharedState.BaseDataPath = txtBaseDataPath.Text;
-            SharedState.ExtractionPath = txtExtractionPath.Text;
-            SharedState.ModdedFilesPath = txtModdedPath.Text;
-            SharedState.GamePath = txtGamePath.Text;
+            string dataPath = txtBaseDataPath.Text.Trim();
+            string modsPath = txtExtractionPath.Text.Trim();
+            if (!string.IsNullOrEmpty(dataPath) && !SharedState.IsValidGameDataPath(dataPath))
+            {
+                lblSettingsStatus.Text = "Select a folder containing .SPK archives or the extracted cdn and hdnw folders.";
+                lblSettingsStatus.ForeColor = Color.Firebrick;
+                return false;
+            }
+            if (string.IsNullOrEmpty(modsPath))
+            {
+                lblSettingsStatus.Text = "Choose a Mods / Extracted Data folder.";
+                lblSettingsStatus.ForeColor = Color.Firebrick;
+                return false;
+            }
+
+            SharedState.BaseDataPath = dataPath;
+            SharedState.ExtractionPath = modsPath;
             bool saved = SharedState.SaveSettings();
             if (saved)
             {
-                lblSettingsStatus.Text = "Settings saved to settings.cfg.";
+                lblSettingsStatus.Text = "Game and Mods folders saved to settings.cfg.";
                 lblSettingsStatus.ForeColor = QFG5Theme.ColorGoldBright;
             }
             else
