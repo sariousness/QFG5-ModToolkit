@@ -6,6 +6,43 @@ using System.Collections.Generic;
 
 namespace QFG5Extractor.Storage.SPK
 {
+    public sealed class SpkArchiveAuditEntry
+    {
+        public string FileName { get; private set; }
+        public bool IsPresentInMods { get; private set; }
+        public bool HasDedicatedToolSupport { get; private set; }
+
+        internal SpkArchiveAuditEntry(string fileName, bool isPresentInMods, bool hasDedicatedToolSupport)
+        {
+            FileName = fileName;
+            IsPresentInMods = isPresentInMods;
+            HasDedicatedToolSupport = hasDedicatedToolSupport;
+        }
+    }
+
+    public sealed class SpkArchiveAuditResult
+    {
+        public string ArchiveFileName { get; private set; }
+        public IList<SpkArchiveAuditEntry> Entries { get; private set; }
+        public int MissingFromModsCount { get; private set; }
+        public int CandidateUnhandledCount { get; private set; }
+
+        internal SpkArchiveAuditResult(string archiveFileName)
+        {
+            ArchiveFileName = archiveFileName;
+            Entries = new List<SpkArchiveAuditEntry>();
+        }
+
+        internal void AddEntry(SpkArchiveAuditEntry entry)
+        {
+            Entries.Add(entry);
+            if (!entry.IsPresentInMods)
+                MissingFromModsCount++;
+            if (!entry.HasDedicatedToolSupport)
+                CandidateUnhandledCount++;
+        }
+    }
+
     public class SpkConverter
     {
         private class SpkEntry
@@ -25,6 +62,52 @@ namespace QFG5Extractor.Storage.SPK
         public static int ExtractMissing(string spkFile, string outputFolder)
         {
             return Extract(spkFile, outputFolder, false);
+        }
+
+        public static SpkArchiveAuditResult Audit(string spkFile, string outputFolder)
+        {
+            if (!File.Exists(spkFile))
+                throw new FileNotFoundException("SPK archive not found.", spkFile);
+
+            List<SpkEntry> entries;
+            using (FileStream fs = new FileStream(spkFile, FileMode.Open, FileAccess.Read))
+            using (BinaryReader br = new BinaryReader(fs))
+            {
+                uint val1;
+                uint val2;
+                short magic;
+                long dataPrefixLength;
+                long dirOffset;
+                long dirEnd;
+                entries = ParseEntries(fs, br, out val1, out val2, out magic, out dataPrefixLength, out dirOffset, out dirEnd);
+            }
+
+            HashSet<string> extractedPaths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            if (Directory.Exists(outputFolder))
+            {
+                string rootPath = Path.GetFullPath(outputFolder);
+                string prefix = rootPath.EndsWith(Path.DirectorySeparatorChar.ToString(), StringComparison.Ordinal)
+                    || rootPath.EndsWith(Path.AltDirectorySeparatorChar.ToString(), StringComparison.Ordinal)
+                    ? rootPath
+                    : rootPath + Path.DirectorySeparatorChar;
+                foreach (string filePath in Directory.GetFiles(outputFolder, "*", SearchOption.AllDirectories))
+                {
+                    string relativePath = Path.GetFullPath(filePath).Substring(prefix.Length);
+                    extractedPaths.Add(NormalizeArchivePath(relativePath));
+                }
+            }
+
+            SpkArchiveAuditResult result = new SpkArchiveAuditResult(Path.GetFileName(spkFile));
+            for (int i = 0; i < entries.Count; i++)
+            {
+                SpkEntry entry = entries[i];
+                string archivePath = NormalizeArchivePath(entry.FileName);
+                result.AddEntry(new SpkArchiveAuditEntry(
+                    entry.FileName,
+                    extractedPaths.Contains(archivePath),
+                    HasDedicatedToolSupport(entry.FileName)));
+            }
+            return result;
         }
 
         private static int Extract(string spkFile, string outputFolder, bool overwriteExisting)
@@ -350,6 +433,28 @@ namespace QFG5Extractor.Storage.SPK
         private static string ToSystemPath(string archivePath)
         {
             return archivePath.Replace('\\', Path.DirectorySeparatorChar).Replace('/', Path.DirectorySeparatorChar);
+        }
+
+        private static string NormalizeArchivePath(string archivePath)
+        {
+            return archivePath.Replace('\\', '/').Replace(Path.DirectorySeparatorChar, '/').Replace(Path.AltDirectorySeparatorChar, '/');
+        }
+
+        private static bool HasDedicatedToolSupport(string archivePath)
+        {
+            switch (Path.GetExtension(archivePath).ToUpperInvariant())
+            {
+                case ".GRA":
+                case ".MDL":
+                case ".ANM":
+                case ".IMG":
+                case ".NOD":
+                case ".QGM":
+                case ".FTR":
+                    return true;
+                default:
+                    return false;
+            }
         }
     }
 }

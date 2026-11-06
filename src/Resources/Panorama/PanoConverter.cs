@@ -24,6 +24,34 @@ namespace QFG5Extractor.Resources.Panorama
 
     public class PanoConverter
     {
+        public static bool TryReadImageDimensions(string imgFile, out Size imageSize)
+        {
+            imageSize = Size.Empty;
+            if (!File.Exists(imgFile)) return false;
+
+            byte[] header = new byte[64];
+            using (FileStream stream = new FileStream(imgFile, FileMode.Open, FileAccess.Read, FileShare.Read))
+            {
+                if (stream.Length < header.Length) return false;
+                int bytesRead = 0;
+                while (bytesRead < header.Length)
+                {
+                    int count = stream.Read(header, bytesRead, header.Length - bytesRead);
+                    if (count == 0) return false;
+                    bytesRead += count;
+                }
+            }
+
+            int decodedWidth = BitConverter.ToInt32(header, 32);
+            int decodedHeight = BitConverter.ToInt32(header, 36);
+            if (decodedWidth <= 0 || decodedHeight <= 0 ||
+                decodedWidth > short.MaxValue || decodedHeight > short.MaxValue)
+                return false;
+
+            imageSize = new Size(decodedHeight, decodedWidth);
+            return true;
+        }
+
         public static bool TryReadProjectionAngles(string imgFile, out double startAngle, out double endAngle)
         {
             startAngle = 0;
@@ -109,9 +137,6 @@ namespace QFG5Extractor.Resources.Panorama
                 throw new InvalidDataException("IMG file is too small: " + imgFile);
             }
 
-            //palette version: 0 = demo, 4 = retail
-            int paletteVersion = paletteBytes[6];
-
             if (pixelBytes.Length < 64)
                 throw new InvalidDataException("IMG file is too small to contain its complete header.");
 
@@ -122,7 +147,7 @@ namespace QFG5Extractor.Resources.Panorama
                 throw new InvalidDataException("IMG file contains invalid panorama dimensions.");
 
             //unpack bits
-            byte[] pixelData = unpackBits(ref bitmapWidth, ref bitmapHeight, ref pixelBytes, ref paletteVersion);
+            byte[] pixelData = unpackBits(ref bitmapWidth, ref bitmapHeight, ref pixelBytes);
 
             Bitmap newBitmap;
 
@@ -192,8 +217,6 @@ namespace QFG5Extractor.Resources.Panorama
                 if (imgBytes.Length < 64)
                     throw new InvalidDataException("IMG file is too small to contain its header.");
 
-                int fileVersion = nodBytes[6];
-
                 int pIdx = Config.nodPaletteStartIndex;
                 for (int i = 0; i < outputPalette.Length; i++)
                 {
@@ -204,7 +227,7 @@ namespace QFG5Extractor.Resources.Panorama
                 }
 
                 // Pack bits for IMG
-                byte[] packedData = packBits(pixelData, width, height, fileVersion);
+                byte[] packedData = packBits(pixelData, width, height);
 
                 // Create new IMG bytes
                 // The IMG file seems to have a 64-byte header (32 * 2)
@@ -451,7 +474,7 @@ namespace QFG5Extractor.Resources.Panorama
             }
         }
 
-        static byte[] packBits(byte[] pixelData, int width, int height, int fileVersion)
+        static byte[] packBits(byte[] pixelData, int width, int height)
         {
             if (width <= 0 || height <= 0 || checked(width * height) != pixelData.Length)
                 throw new ArgumentException("Pixel data does not match the panorama dimensions.", "pixelData");
@@ -471,7 +494,7 @@ namespace QFG5Extractor.Resources.Panorama
                     if (runLen >= 2)
                     {
                         ms.WriteByte((byte)runLen);
-                        ms.WriteByte((fileVersion > 0) ? pixelData[i] : (byte)(pixelData[i] + 85));
+                        ms.WriteByte(pixelData[i]);
                         i += runLen;
                     }
                     else
@@ -487,9 +510,7 @@ namespace QFG5Extractor.Resources.Panorama
 
                         ms.WriteByte((byte)(256 - literalLen));
                         for (int k = 0; k < literalLen; k++)
-                            ms.WriteByte((fileVersion > 0)
-                                ? pixelData[i + k]
-                                : (byte)(pixelData[i + k] + 85));
+                            ms.WriteByte(pixelData[i + k]);
                         i += literalLen;
                     }
                 }
@@ -499,7 +520,7 @@ namespace QFG5Extractor.Resources.Panorama
             return ms.ToArray();
         }
 
-        static byte[] unpackBits(ref int bitmapWidth, ref int bitmapHeight, ref byte[] pixelBytes, ref int fileVersion)
+        static byte[] unpackBits(ref int bitmapWidth, ref int bitmapHeight, ref byte[] pixelBytes)
         {
             int i = Config.imgPixelDataStartIndex;
             byte[] pixelData = new byte[bitmapWidth * bitmapHeight];
@@ -525,31 +546,31 @@ namespace QFG5Extractor.Resources.Panorama
                     throw new InvalidDataException("IMG contains a column terminator before the column is complete.");
 
                 int runLength = Math.Abs((int)count);
-                if (column + runLength > bitmapWidth)
-                    throw new InvalidDataException("IMG RLE packet exceeds the panorama column width.");
+                int pixelsToWrite = Math.Min(runLength, bitmapWidth - column);
 
                 if (count > 0)
                 {
                     if (i >= pixelBytes.Length)
                         throw new InvalidDataException("IMG ends inside a repeated-value RLE packet.");
-                    byte value = DecodePaletteIndex(pixelBytes[i++], fileVersion);
-                    for (int j = 0; j < runLength; j++)
-                        pixelData[row * bitmapWidth + column++] = value;
+                    byte value = pixelBytes[i++];
+                    for (int j = 0; j < pixelsToWrite; j++)
+                        pixelData[row * bitmapWidth + column + j] = value;
                 }
                 else
                 {
                     if (i + runLength > pixelBytes.Length)
                         throw new InvalidDataException("IMG ends inside a literal RLE packet.");
                     for (int j = 0; j < runLength; j++)
-                        pixelData[row * bitmapWidth + column++] = DecodePaletteIndex(pixelBytes[i++], fileVersion);
+                    {
+                        byte value = pixelBytes[i++];
+                        if (j < pixelsToWrite)
+                            pixelData[row * bitmapWidth + column + j] = value;
+                    }
                 }
+                column += pixelsToWrite;
             }
             return pixelData;
         }
 
-        private static byte DecodePaletteIndex(byte value, int fileVersion)
-        {
-            return fileVersion > 0 ? value : (byte)(value - 85);
-        }
     }
 }

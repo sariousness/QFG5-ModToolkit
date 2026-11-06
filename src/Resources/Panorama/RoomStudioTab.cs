@@ -16,6 +16,9 @@ namespace QFG5Extractor.Resources.Panorama
         private readonly TextBox searchBox;
         private readonly Label statusLabel;
         private readonly PanoramaProjectionControl projection;
+        private readonly CheckBox showFtrOverlay;
+        private readonly ComboBox ftrFileList;
+        private readonly List<FtrFileItem> availableFtrFiles = new List<FtrFileItem>();
 
         public RoomStudioTab()
         {
@@ -85,7 +88,11 @@ namespace QFG5Extractor.Resources.Panorama
                 Font = QFG5Theme.BodyFont,
                 Margin = new Padding(0, 3, 0, 0)
             };
-            btnReload.Click += (s, e) => ReloadScreens();
+            btnReload.Click += (s, e) =>
+            {
+                ReloadScreens();
+                ReloadFtrFiles();
+            };
 
             screenLayout.Controls.Add(listHeader, 0, 0);
             screenLayout.Controls.Add(searchBox, 0, 1);
@@ -100,20 +107,22 @@ namespace QFG5Extractor.Resources.Panorama
                 RowCount = 3,
                 Margin = new Padding(8, 0, 0, 0)
             };
-            viewLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 34));
+            viewLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 38));
             viewLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 100f));
             viewLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 28));
 
             QFG5TableLayoutPanel viewHeader = new QFG5TableLayoutPanel
             {
                 Dock = DockStyle.Fill,
-                ColumnCount = 2,
+                ColumnCount = 4,
                 RowCount = 1,
                 BackColor = QFG5Theme.ColorSurface,
                 Padding = new Padding(8, 0, 4, 0)
             };
             viewHeader.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100f));
-            viewHeader.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 115));
+            viewHeader.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 105));
+            viewHeader.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 150));
+            viewHeader.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 90));
             QFG5Theme.ApplyHeaderStroke(viewHeader);
             viewHeader.Controls.Add(new Label
             {
@@ -124,6 +133,31 @@ namespace QFG5Extractor.Resources.Panorama
                 TextAlign = ContentAlignment.MiddleLeft,
                 AutoEllipsis = true
             }, 0, 0);
+
+            showFtrOverlay = new CheckBox
+            {
+                Text = "FTR overlay",
+                Dock = DockStyle.Fill,
+                ForeColor = QFG5Theme.ColorTextPrimary,
+                Font = QFG5Theme.CaptionFont,
+                TextAlign = ContentAlignment.MiddleCenter,
+                AutoSize = false,
+                Margin = new Padding(2)
+            };
+            showFtrOverlay.CheckedChanged += (s, e) => UpdateFtrOverlay();
+            viewHeader.Controls.Add(showFtrOverlay, 1, 0);
+
+            ftrFileList = new ComboBox
+            {
+                Dock = DockStyle.Fill,
+                DropDownStyle = ComboBoxStyle.DropDownList,
+                BackColor = QFG5Theme.ColorSurfaceRecessed,
+                ForeColor = QFG5Theme.ColorTextPrimary,
+                Font = QFG5Theme.CaptionFont,
+                Margin = new Padding(2)
+            };
+            ftrFileList.SelectedIndexChanged += (s, e) => UpdateFtrOverlay();
+            viewHeader.Controls.Add(ftrFileList, 2, 0);
 
             Button btnBrowse = new Button
             {
@@ -136,7 +170,7 @@ namespace QFG5Extractor.Resources.Panorama
                 Margin = new Padding(2)
             };
             btnBrowse.Click += BrowsePanorama;
-            viewHeader.Controls.Add(btnBrowse, 1, 0);
+            viewHeader.Controls.Add(btnBrowse, 3, 0);
 
             projection = new PanoramaProjectionControl { Dock = DockStyle.Fill };
             statusLabel = new Label
@@ -158,8 +192,11 @@ namespace QFG5Extractor.Resources.Panorama
             toolTip.SetToolTip(screenList, "Room views are identified by their numeric view IDs; known room names are shown where available.");
             toolTip.SetToolTip(btnReload, "Refresh the list from Mods/cdn/NOD.");
             toolTip.SetToolTip(btnBrowse, "Load a bitmap. A matching IMG file in Mods/cdn/IMG provides its panorama angle range.");
+            toolTip.SetToolTip(showFtrOverlay, "Draw FTR region polygons on the panorama; nonzero candidate portal fields are highlighted.");
+            toolTip.SetToolTip(ftrFileList, "Choose among FTR resources associated with the selected room.");
 
             SharedState.OnPanoFilesChanged += PanoFilesChanged;
+            ReloadFtrFiles();
         }
 
         public void AutoLoad()
@@ -226,7 +263,7 @@ namespace QFG5Extractor.Resources.Panorama
             if (selectedIndex >= 0)
                 screenList.SelectedIndex = selectedIndex;
             else if (!scanFailed)
-                statusLabel.Text = "No panorama BMPs found. Open Pano Editor to extract screens.";
+                statusLabel.Text = "No panorama BMPs found. Open Pano Extractor IMG/NOD to extract screens.";
         }
 
         private void LoadSelectedScreen()
@@ -272,13 +309,18 @@ namespace QFG5Extractor.Resources.Panorama
                     Logger.LogError("RoomStudioTab", "Could not load panorama " +
                         dialog.FileName + ": " + ex.Message);
                     MessageBox.Show("Could not load panorama: " + ex.Message,
-                        "Room / Studio", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                        "Scenes (Demo)", MessageBoxButtons.OK, MessageBoxIcon.Error);
                 }
             }
         }
 
         private void LoadPanorama(Bitmap bitmap, string path)
         {
+            int roomId;
+            string viewId;
+            GetRoomInfo(path, out roomId, out viewId);
+            RefreshFtrChoices(roomId, Path.GetFileNameWithoutExtension(path));
+
             double startAngle = 0;
             double endAngle = 0;
             string imgPath = FindMatchingImageFile(path);
@@ -288,6 +330,167 @@ namespace QFG5Extractor.Resources.Panorama
                 projection.SetPanorama(bitmap, path, startAngle, endAngle, true);
             else
                 projection.SetPanorama(bitmap, path, -Math.PI, Math.PI, false);
+            UpdateFtrOverlay();
+        }
+
+        private void ReloadFtrFiles()
+        {
+            availableFtrFiles.Clear();
+            HashSet<string> seenNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            string[] folders =
+            {
+                SharedState.GetModsPath("cdn", "FTR"),
+                SharedState.GetModsPath("cdn"),
+                SharedState.GetGameDataPath("cdn", "FTR"),
+                SharedState.GetGameDataPath("cdn")
+            };
+
+            foreach (string folder in folders)
+            {
+                if (!Directory.Exists(folder))
+                    continue;
+
+                try
+                {
+                    string[] paths = Directory.GetFiles(folder);
+                    Array.Sort(paths, StringComparer.OrdinalIgnoreCase);
+                    foreach (string path in paths)
+                    {
+                        if (!string.Equals(Path.GetExtension(path), ".ftr",
+                            StringComparison.OrdinalIgnoreCase))
+                            continue;
+
+                        string name = Path.GetFileNameWithoutExtension(path);
+                        if (!seenNames.Add(name))
+                            continue;
+
+                        int resourceId;
+                        if (!int.TryParse(name, out resourceId))
+                            continue;
+                        availableFtrFiles.Add(new FtrFileItem(path, resourceId));
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Logger.LogError("RoomStudioTab", "Could not enumerate FTR files in " +
+                        folder + ": " + ex);
+                    statusLabel.Text = "Could not list FTR files: " + ex.Message;
+                }
+            }
+
+            int roomId;
+            string viewId;
+            GetRoomInfo(projection.SourcePath ?? string.Empty, out roomId, out viewId);
+            RefreshFtrChoices(roomId,
+                Path.GetFileNameWithoutExtension(projection.SourcePath ?? string.Empty));
+        }
+
+        private void RefreshFtrChoices(int roomId, string preferredResourceName)
+        {
+            FtrFileItem currentItem = ftrFileList.SelectedItem as FtrFileItem;
+            string currentPath = currentItem == null ? null : currentItem.Path;
+            ftrFileList.BeginUpdate();
+            try
+            {
+                ftrFileList.Items.Clear();
+                ftrFileList.Items.Add(new FtrFileItem(null, 0));
+
+                List<FtrFileItem> matchingFiles = new List<FtrFileItem>();
+                foreach (FtrFileItem file in availableFtrFiles)
+                    if (roomId <= 0 || file.RoomId == roomId)
+                        matchingFiles.Add(file);
+
+                foreach (FtrFileItem file in matchingFiles)
+                    ftrFileList.Items.Add(file);
+
+                int selectedIndex = matchingFiles.Count == 0 ? 0 : 1;
+                for (int i = 1; i < ftrFileList.Items.Count; i++)
+                {
+                    FtrFileItem file = (FtrFileItem)ftrFileList.Items[i];
+                    if ((!string.IsNullOrEmpty(preferredResourceName) &&
+                         string.Equals(Path.GetFileNameWithoutExtension(file.Path),
+                             preferredResourceName, StringComparison.OrdinalIgnoreCase)) ||
+                        (string.IsNullOrEmpty(preferredResourceName) &&
+                         string.Equals(file.Path, currentPath, StringComparison.OrdinalIgnoreCase)))
+                    {
+                        selectedIndex = i;
+                        break;
+                    }
+                }
+
+                ftrFileList.SelectedIndex = selectedIndex;
+                ftrFileList.Enabled = matchingFiles.Count > 0;
+            }
+            catch (Exception ex)
+            {
+                Logger.LogError("RoomStudioTab", "Could not enumerate FTR files: " + ex);
+                statusLabel.Text = "Could not list FTR files: " + ex.Message;
+            }
+            finally
+            {
+                ftrFileList.EndUpdate();
+            }
+
+            if (showFtrOverlay.Checked && ftrFileList.SelectedIndex == 0)
+                statusLabel.Text = roomId > 0
+                    ? "No FTR files found for room " + roomId + "."
+                    : "No FTR files are available in the extracted game data.";
+        }
+
+        private void UpdateFtrOverlay()
+        {
+            FtrFileItem item = ftrFileList.SelectedItem as FtrFileItem;
+            if (item == null || string.IsNullOrEmpty(item.Path))
+            {
+                projection.SetRegionOverlay(null, false, Size.Empty);
+                if (showFtrOverlay.Checked)
+                    statusLabel.Text = "No matching FTR file is available for this room.";
+                return;
+            }
+
+            try
+            {
+                IList<FtrRegion> regions = FtrConverter.Read(item.Path);
+                string imgPath = FindMatchingImageFile(projection.SourcePath, item.ResourceId);
+                Size imageSize;
+                if (string.IsNullOrEmpty(imgPath) ||
+                    !PanoConverter.TryReadImageDimensions(imgPath, out imageSize))
+                    imageSize = Size.Empty;
+                projection.SetRegionOverlay(regions, showFtrOverlay.Checked, imageSize);
+                if (showFtrOverlay.Checked)
+                    statusLabel.Text = "Showing " + regions.Count + " regions from " +
+                        Path.GetFileName(item.Path) + (imageSize.IsEmpty
+                            ? "; image dimensions unavailable, using direct FTR pixel coordinates."
+                            : "; coordinates mapped from IMG dimensions " +
+                                imageSize.Width + "x" + imageSize.Height + ".");
+            }
+            catch (Exception ex)
+            {
+                projection.SetRegionOverlay(null, false, Size.Empty);
+                statusLabel.Text = "Could not read FTR overlay: " + ex.Message;
+                Logger.LogError("RoomStudioTab", "Could not read FTR overlay " + item.Path + ": " + ex);
+            }
+        }
+
+        private sealed class FtrFileItem
+        {
+            public string Path { get; private set; }
+            public int ResourceId { get; private set; }
+            public int RoomId { get; private set; }
+
+            public FtrFileItem(string path, int resourceId)
+            {
+                Path = path;
+                ResourceId = resourceId;
+                RoomId = resourceId >= 1000 ? resourceId / 10 : resourceId;
+            }
+
+            public override string ToString()
+            {
+                return string.IsNullOrEmpty(Path)
+                    ? "No matching FTR"
+                    : System.IO.Path.GetFileName(Path);
+            }
         }
 
         private string GetAngleStatus(string bitmapPath)
@@ -299,18 +502,32 @@ namespace QFG5Extractor.Resources.Panorama
                     : ". IMG angle metadata was unavailable; using a full-panorama estimate.";
         }
 
+        private static string FindMatchingImageFile(string bitmapPath, int resourceId)
+        {
+            string baseName = resourceId > 0
+                ? resourceId.ToString()
+                : Path.GetFileNameWithoutExtension(bitmapPath);
+            string[] imageFolders =
+            {
+                SharedState.GetModsPath("cdn", "IMG"),
+                SharedState.GetGameDataPath("cdn", "IMG")
+            };
+            foreach (string imageFolder in imageFolders)
+            {
+                if (!Directory.Exists(imageFolder))
+                    continue;
+                foreach (string path in Directory.GetFiles(imageFolder))
+                    if (string.Equals(Path.GetExtension(path), ".img", StringComparison.OrdinalIgnoreCase) &&
+                        string.Equals(Path.GetFileNameWithoutExtension(path), baseName,
+                            StringComparison.OrdinalIgnoreCase))
+                        return path;
+            }
+            return null;
+        }
+
         private static string FindMatchingImageFile(string bitmapPath)
         {
-            string imageFolder = SharedState.GetModsPath("cdn", "IMG");
-            if (!Directory.Exists(imageFolder)) return null;
-
-            string baseName = Path.GetFileNameWithoutExtension(bitmapPath);
-            foreach (string path in Directory.GetFiles(imageFolder))
-                if (string.Equals(Path.GetExtension(path), ".img", StringComparison.OrdinalIgnoreCase) &&
-                    string.Equals(Path.GetFileNameWithoutExtension(path), baseName,
-                        StringComparison.OrdinalIgnoreCase))
-                    return path;
-            return null;
+            return FindMatchingImageFile(bitmapPath, 0);
         }
 
         private sealed class PanoramaScreen
@@ -394,6 +611,9 @@ namespace QFG5Extractor.Resources.Panorama
     {
         private const double DegreesToRadians = Math.PI / 180.0;
         private Bitmap source;
+        private Bitmap regionOverlay;
+        private IList<FtrRegion> regions;
+        private bool regionOverlayEnabled;
         private Bitmap projectionCache;
         private string sourcePath;
         private string projectionError;
@@ -466,7 +686,99 @@ namespace QFG5Extractor.Resources.Panorama
             source = null;
             sourcePath = null;
             hasImageAngleRange = false;
+            RebuildRegionOverlay();
             InvalidateProjection();
+        }
+
+        public void SetRegionOverlay(IList<FtrRegion> overlayRegions, bool enabled,
+            Size imageCoordinateSize)
+        {
+            regions = overlayRegions;
+            regionOverlayEnabled = enabled;
+            regionCoordinateSize = imageCoordinateSize;
+            RebuildRegionOverlay();
+            InvalidateProjection();
+        }
+
+        private void RebuildRegionOverlay()
+        {
+            if (regionOverlay != null)
+            {
+                regionOverlay.Dispose();
+                regionOverlay = null;
+            }
+            if (source == null || !regionOverlayEnabled || regions == null || regions.Count == 0)
+                return;
+
+            Bitmap overlay = new Bitmap(source.Width, source.Height, PixelFormat.Format32bppArgb);
+            using (Graphics graphics = Graphics.FromImage(overlay))
+            using (Pen regionPen = new Pen(Color.FromArgb(190, 30, 220, 240), 2))
+            using (Pen portalPen = new Pen(Color.FromArgb(240, 255, 220, 40), 3))
+            using (SolidBrush regionBrush = new SolidBrush(Color.FromArgb(36, 20, 190, 220)))
+            using (SolidBrush portalBrush = new SolidBrush(Color.FromArgb(75, 255, 40, 30)))
+            using (SolidBrush labelBrush = new SolidBrush(Color.White))
+            using (Font labelFont = new Font(FontFamily.GenericSansSerif, 10, FontStyle.Bold))
+            using (SolidBrush labelOutline = new SolidBrush(Color.FromArgb(230, Color.Black)))
+            {
+                graphics.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
+                foreach (FtrRegion region in regions)
+                {
+                    if (region.Points.Count < 3)
+                        continue;
+
+                    PointF[] polygon = new PointF[region.Points.Count];
+                    float centerX = 0;
+                    float centerY = 0;
+                    for (int i = 0; i < region.Points.Count; i++)
+                    {
+                        Point point = region.Points[i];
+                        polygon[i] = MapFtrPoint(point);
+                        centerX += polygon[i].X;
+                        centerY += polygon[i].Y;
+                    }
+
+                    bool isPortalCandidate = region.PortalFlag != 0;
+                    graphics.FillPolygon(isPortalCandidate ? portalBrush : regionBrush, polygon);
+                    graphics.DrawPolygon(isPortalCandidate ? portalPen : regionPen, polygon);
+                    if (isPortalCandidate)
+                    {
+                        string label = region.Index.ToString();
+                        float x = centerX / polygon.Length;
+                        float y = centerY / polygon.Length;
+                        graphics.DrawString(label, labelFont, labelOutline, x + 1, y + 1);
+                        graphics.DrawString(label, labelFont, labelBrush, x, y);
+                    }
+                }
+            }
+            regionOverlay = overlay;
+        }
+
+        private Size regionCoordinateSize;
+
+        private PointF MapFtrPoint(Point point)
+        {
+            if (regionCoordinateSize.IsEmpty)
+                return new PointF(point.X, point.Y);
+
+            if (source.Width == regionCoordinateSize.Width &&
+                source.Height == regionCoordinateSize.Height)
+                return new PointF(point.X, point.Y);
+
+            if (source.Width == regionCoordinateSize.Height &&
+                source.Height == regionCoordinateSize.Width)
+                return new PointF(regionCoordinateSize.Height - 1 - point.Y, point.X);
+
+            bool rotated = source.Width < source.Height &&
+                regionCoordinateSize.Width > regionCoordinateSize.Height;
+            if (rotated)
+                return new PointF(
+                    (regionCoordinateSize.Height - 1 - point.Y) * (source.Width - 1f) /
+                        Math.Max(1, regionCoordinateSize.Height - 1),
+                    point.X * (source.Height - 1f) / Math.Max(1, regionCoordinateSize.Width - 1));
+
+            return new PointF(
+                point.X * (source.Width - 1f) / Math.Max(1, regionCoordinateSize.Width - 1),
+                point.Y * (source.Height - 1f) / Math.Max(1, regionCoordinateSize.Height - 1));
         }
 
         protected override void OnPaint(PaintEventArgs e)
@@ -667,6 +979,34 @@ namespace QFG5Extractor.Resources.Panorama
             {
                 source.UnlockBits(sourceData);
             }
+            if (regionOverlay != null)
+            {
+                BitmapData overlayData = regionOverlay.LockBits(sourceBounds,
+                    ImageLockMode.ReadOnly, PixelFormat.Format32bppArgb);
+                byte[] overlayPixels = new byte[source.Width * source.Height * 4];
+                try
+                {
+                    for (int y = 0; y < source.Height; y++)
+                        Marshal.Copy(IntPtr.Add(overlayData.Scan0, y * overlayData.Stride),
+                            overlayPixels, y * source.Width * 4, source.Width * 4);
+                }
+                finally
+                {
+                    regionOverlay.UnlockBits(overlayData);
+                }
+
+                for (int i = 0; i < sourcePixels.Length; i += 4)
+                {
+                    int alpha = overlayPixels[i + 3];
+                    if (alpha == 0)
+                        continue;
+                    int inverseAlpha = 255 - alpha;
+                    for (int channel = 0; channel < 3; channel++)
+                        sourcePixels[i + channel] = (byte)(
+                            (overlayPixels[i + channel] * alpha +
+                             sourcePixels[i + channel] * inverseAlpha + 127) / 255);
+                }
+            }
 
             byte[] outputPixels = new byte[width * height * 4];
             double horizontalScale = Math.Tan(fieldOfView * DegreesToRadians / 2.0);
@@ -758,6 +1098,7 @@ namespace QFG5Extractor.Resources.Panorama
             if (disposing)
             {
                 if (source != null) source.Dispose();
+                if (regionOverlay != null) regionOverlay.Dispose();
                 if (projectionCache != null) projectionCache.Dispose();
                 cameraToolTip.Dispose();
             }

@@ -64,20 +64,24 @@ namespace QFG5Extractor.Resources.Save
         private Button btnInventoryScreen;
         private Button btnCharacterScreen;
         private Button btnFlagsScreen;
+        private Button btnPatchesScreen;
         private Panel inventoryScreenPanel;
         private Panel characterScreenPanel;
         private Panel flagsScreenPanel;
+        private Panel patchesScreenPanel;
         private CharacterModelPreviewControl characterModelPreview;
         private PanoramaProjectionControl roomPreview;
         private Label roomPreviewStatusLabel;
         private FlagsTab flagsScreen;
+        private PatchesTab patchesScreen;
         private readonly List<PaletteItem> catalogItems = new List<PaletteItem>();
 
         private enum SaveEditorScreen
         {
             Inventory,
             Character,
-            Flags
+            Flags,
+            Patches
         }
 
         private sealed class PaletteSection
@@ -100,7 +104,8 @@ namespace QFG5Extractor.Resources.Save
             if (session == null) throw new ArgumentNullException("session");
             this.session = session;
             parser = new SaveGameParser(session);
-            inventoryPath = Path.Combine(QFG5Theme.UIKitPath, "Inventory Graphics");
+            string inventoryGraphicsPath = Path.Combine(QFG5Theme.UIKitPath, "Inventory Graphics");
+            inventoryPath = Directory.Exists(inventoryGraphicsPath) ? inventoryGraphicsPath : QFG5Theme.UIKitPath;
             
             previewTimer = new Timer { Interval = 100 };
             previewTimer.Tick += (s, e) => {
@@ -124,6 +129,9 @@ namespace QFG5Extractor.Resources.Save
             tab.Dock = DockStyle.Fill;
             flagsScreenPanel.Controls.Add(tab);
             tab.RefreshFromSession();
+            patchesScreen = new PatchesTab(tab);
+            patchesScreenPanel.Controls.Add(patchesScreen);
+            patchesScreen.RefreshFromSession();
         }
 
         private void CreatePreviewPopup()
@@ -705,9 +713,15 @@ namespace QFG5Extractor.Resources.Save
             btnFlagsScreen.Width = 104;
             btnFlagsScreen.Height = 30;
             btnFlagsScreen.Click += (s, e) => SetSaveScreen(SaveEditorScreen.Flags);
+            btnPatchesScreen = CreateViewButton("Patches");
+            btnPatchesScreen.Name = "PatchesScreenButton";
+            btnPatchesScreen.Width = 104;
+            btnPatchesScreen.Height = 30;
+            btnPatchesScreen.Click += (s, e) => SetSaveScreen(SaveEditorScreen.Patches);
             screenNavigation.Controls.Add(btnInventoryScreen);
             screenNavigation.Controls.Add(btnCharacterScreen);
             screenNavigation.Controls.Add(btnFlagsScreen);
+            screenNavigation.Controls.Add(btnPatchesScreen);
 
             Panel saveScreenHost = new Panel {
                 Dock = DockStyle.Fill,
@@ -729,12 +743,18 @@ namespace QFG5Extractor.Resources.Save
                 Padding = new Padding(4),
                 Visible = false
             };
+            patchesScreenPanel = new Panel {
+                Dock = DockStyle.Fill,
+                BackColor = QFG5Theme.ColorBgDark,
+                Visible = false
+            };
             split.Dock = DockStyle.Fill;
             characterScreenPanel.Controls.Add(characterScreenSplit);
             inventoryScreenPanel.Controls.Add(split);
             saveScreenHost.Controls.Add(inventoryScreenPanel);
             saveScreenHost.Controls.Add(characterScreenPanel);
             saveScreenHost.Controls.Add(flagsScreenPanel);
+            saveScreenHost.Controls.Add(patchesScreenPanel);
 
             mainLayout.Controls.Add(new QFG5CollapsibleSection("SAVE FILE", header, QFG5Layout.RowHeight + 30), 0, 0);
             mainLayout.Controls.Add(screenNavigation, 0, 1);
@@ -762,23 +782,30 @@ namespace QFG5Extractor.Resources.Save
         private void SetSaveScreen(SaveEditorScreen screen)
         {
             if (inventoryScreenPanel == null || characterScreenPanel == null ||
-                flagsScreenPanel == null || btnInventoryScreen == null ||
-                btnCharacterScreen == null || btnFlagsScreen == null)
+                flagsScreenPanel == null || patchesScreenPanel == null ||
+                btnInventoryScreen == null || btnCharacterScreen == null ||
+                btnFlagsScreen == null || btnPatchesScreen == null)
                 return;
 
             inventoryScreenPanel.Visible = screen == SaveEditorScreen.Inventory;
             characterScreenPanel.Visible = screen == SaveEditorScreen.Character;
             flagsScreenPanel.Visible = screen == SaveEditorScreen.Flags;
+            patchesScreenPanel.Visible = screen == SaveEditorScreen.Patches;
             if (screen == SaveEditorScreen.Inventory)
                 inventoryScreenPanel.BringToFront();
             else if (screen == SaveEditorScreen.Character)
                 characterScreenPanel.BringToFront();
-            else
+            else if (screen == SaveEditorScreen.Flags)
                 flagsScreenPanel.BringToFront();
+            else
+                patchesScreenPanel.BringToFront();
 
             SetScreenButtonState(btnInventoryScreen, screen == SaveEditorScreen.Inventory);
             SetScreenButtonState(btnCharacterScreen, screen == SaveEditorScreen.Character);
             SetScreenButtonState(btnFlagsScreen, screen == SaveEditorScreen.Flags);
+            SetScreenButtonState(btnPatchesScreen, screen == SaveEditorScreen.Patches);
+            if (screen == SaveEditorScreen.Patches && patchesScreen != null)
+                patchesScreen.RefreshFromSession();
         }
 
         private static void FitCharacterToolbar(FlowLayoutPanel toolbar, ComboBox selector,
@@ -1052,12 +1079,11 @@ namespace QFG5Extractor.Resources.Save
                 ? null
                 : selectedRow.Tag as SaveGameParser.InventoryItem;
             bool activeItem = session.IsLoaded && selectedIndex >= 0 &&
-                selectedIndex < session.InventoryCount && selectedIndex < SaveGameParser.INVENTORY_POOL_SIZE &&
+                selectedIndex < session.InventoryCount &&
                 (selectedItem == null || !selectedItem.IsHeader);
-            bool canInsert = activeItem && session.InventoryCount < SaveGameParser.INVENTORY_POOL_SIZE;
-            menuDuplicateItem.Enabled = canInsert;
-            menuInsertEmptyItem.Enabled = canInsert;
-            menuDeleteItem.Enabled = activeItem;
+            menuDuplicateItem.Enabled = false;
+            menuInsertEmptyItem.Enabled = false;
+            menuDeleteItem.Enabled = false;
             e.Cancel = !activeItem;
         }
 
@@ -1244,6 +1270,8 @@ namespace QFG5Extractor.Resources.Save
             RefreshGrid();
             if (flagsScreen != null)
                 flagsScreen.RefreshFromSession();
+            if (patchesScreen != null)
+                patchesScreen.RefreshFromSession();
             if (hasLoadedSave) PopulatePalette();
         }
 
@@ -1349,7 +1377,7 @@ namespace QFG5Extractor.Resources.Save
         {
             int roomId = 0;
             bool canRead = session.IsLoaded && session.TryGetRoomId(out roomId);
-            bool canEdit = canRead && session.CanEditCharacterData;
+            bool canEdit = canRead && session.CanEditCharacterData && session.CanEditRoomId;
             updatingRoomControls = true;
             numericRoomId.Enabled = canEdit;
             comboRoomName.Enabled = canEdit;
@@ -1360,7 +1388,9 @@ namespace QFG5Extractor.Resources.Save
                 numericRoomId.Value = roomId;
                 SelectRoomName(roomId);
                 roomStatusLabel.Text = !canEdit
-                    ? session.CharacterDataUnavailableReason
+                    ? (!session.CanEditCharacterData
+                        ? session.CharacterDataUnavailableReason
+                        : session.RoomEditUnavailableReason)
                     : "Current location: " + FormatRoomLocation(roomId) +
                         (session.IsDirty ? ". Unsaved changes are in memory; click Save." : ". Select another location, apply it, then click Save.");
             }
@@ -1392,6 +1422,9 @@ namespace QFG5Extractor.Resources.Save
 
         private static string FormatRoomLocation(int roomId)
         {
+            if (roomId == 0)
+                return "Map";
+
             RoomLocationInfo location;
             return RoomLocationCatalog.TryGet(roomId, out location)
                 ? location.ToString()
@@ -1414,7 +1447,7 @@ namespace QFG5Extractor.Resources.Save
             {
                 roomPreview.ClearPanorama();
                 roomPreviewStatusLabel.Text = "No extracted panorama found for room " +
-                    roomId + ". Extract its view in Pano Editor.";
+                    roomId + ". Extract its view in Pano Extractor IMG/NOD.";
                 return;
             }
 
@@ -2267,10 +2300,12 @@ namespace QFG5Extractor.Resources.Save
             int spriteId = 0x10000 | lowByte | (highByte << 8);
             string fileName = spriteId.ToString(System.Globalization.CultureInfo.InvariantCulture);
             string[] extensions = { ".png", ".bmp" };
-            string[] directories = { "Items", "Spells", "Equipment" };
+            string[] directories = { "Items", "Spells", "Equipment", string.Empty };
             foreach (string directoryName in directories)
             {
-                string directory = Path.Combine(inventoryPath, directoryName);
+                string directory = string.IsNullOrEmpty(directoryName)
+                    ? inventoryPath
+                    : Path.Combine(inventoryPath, directoryName);
                 foreach (string extension in extensions)
                 {
                     string imagePath = Path.Combine(directory, fileName + extension);

@@ -16,6 +16,32 @@ namespace QFG5Extractor.Core
 {
     public class TextureEditorTab : UserControl, IMessageFilter
     {
+        private sealed class AnimatedProp
+        {
+            public readonly List<Bitmap> Frames;
+            public readonly int[] FrameDelays;
+
+            public AnimatedProp(List<Bitmap> frames, int[] frameDelays)
+            {
+                Frames = frames;
+                FrameDelays = frameDelays;
+            }
+        }
+
+        private sealed class PropFrameState
+        {
+            public Point Center;
+            public decimal Scale;
+            public float Rotation;
+
+            public PropFrameState(Point center, decimal scale, float rotation)
+            {
+                Center = center;
+                Scale = scale;
+                Rotation = rotation;
+            }
+        }
+
         // ── Editing state (untouched semantics) ───────────────────────────────
         private Bitmap currentBitmap;
         private Bitmap originalBitmap;
@@ -43,13 +69,18 @@ namespace QFG5Extractor.Core
         private FlowLayoutPanel propThumbnailList;
         private NumericUpDown numPropScale;
         private NumericUpDown numPropRotation;
+        private ComboBox cmbGifFrameMapping;
         private Bitmap selectedPropImage;
+        private AnimatedProp selectedAnimatedProp;
+        private int selectedAnimatedPropFrame;
+        private Timer propAnimationTimer;
         private Point propScreenPosition;
         private bool hasPropPosition;
         private readonly List<Bitmap> loadedGraFrames = new List<Bitmap>();
         private readonly List<Bitmap> originalGraFrames = new List<Bitmap>();
         private readonly List<bool> dirtyGraFrames = new List<bool>();
         private readonly List<Button> graFrameThumbnails = new List<Button>();
+        private readonly Dictionary<int, PropFrameState> graPropFrameStates = new Dictionary<int, PropFrameState>();
         private bool spaceHeld;
         private bool isPanning;
         private bool panGestureActive;
@@ -61,6 +92,8 @@ namespace QFG5Extractor.Core
         private bool strokeUndoCaptured;
         private string selectedProp;
         private const int MaxUndoSteps = 30;
+        private const int DefaultGifFrameDelayMs = 100;
+        private const int MinimumGifFrameDelayMs = 20;
         private const string OriginalMdlBackupSuffix = ".qfg5extractor.bak";
         private const string OriginalGraBackupSuffix = ".qfg5extractor.bak";
         private string loadedGraPath = string.Empty;
@@ -106,6 +139,8 @@ namespace QFG5Extractor.Core
             Dock = DockStyle.Fill;
             this.BackColor = Color.Transparent;
             InitializeComponent();
+            propAnimationTimer = new Timer();
+            propAnimationTimer.Tick += PropAnimationTimer_Tick;
             Application.AddMessageFilter(this);
 
             SharedState.OnEditTextureRequested += (bmp) => {
@@ -306,7 +341,10 @@ namespace QFG5Extractor.Core
                 frameIndex == loadedGraFrameIndex)
                 return;
 
-            if (currentTool == "Prop")
+            bool wasEditingProp = currentTool == "Prop";
+            if (wasEditingProp)
+                StorePropFrameState(loadedGraFrameIndex);
+            if (wasEditingProp)
                 SelectTool("Pencil");
             StoreCurrentGraFrame();
             string graPath = loadedGraPath;
@@ -316,6 +354,8 @@ namespace QFG5Extractor.Core
             loadedGraPath = graPath;
             loadedGraCollectionIndex = collectionIndex;
             loadedGraFrameIndex = frameIndex;
+            if (wasEditingProp)
+                RestorePropFrameState(frameIndex);
             btnInjectMdl.Enabled = false;
             btnInjectGra.Enabled = true;
             UpdateGraFrameSelection();
@@ -333,6 +373,58 @@ namespace QFG5Extractor.Core
                     ? QFG5Theme.ColorGold
                     : QFG5Theme.ColorBorderOuter;
             }
+        }
+
+        private PropFrameState GetPropFrameState(int frameIndex, bool createIfMissing = true)
+        {
+            if (frameIndex < 0 || frameIndex >= loadedGraFrames.Count)
+            {
+                return new PropFrameState(
+                    propScreenPosition,
+                    numPropScale != null ? numPropScale.Value : 1m,
+                    numPropRotation != null ? (float)numPropRotation.Value : 0f);
+            }
+
+            if (!graPropFrameStates.TryGetValue(frameIndex, out PropFrameState state) && createIfMissing)
+            {
+                state = new PropFrameState(
+                    propScreenPosition,
+                    numPropScale != null ? numPropScale.Value : 1m,
+                    numPropRotation != null ? (float)numPropRotation.Value : 0f);
+                graPropFrameStates[frameIndex] = state;
+            }
+
+            return state ?? new PropFrameState(
+                propScreenPosition,
+                numPropScale != null ? numPropScale.Value : 1m,
+                numPropRotation != null ? (float)numPropRotation.Value : 0f);
+        }
+
+        private void StorePropFrameState(int frameIndex)
+        {
+            if (frameIndex < 0 || frameIndex >= loadedGraFrames.Count)
+                return;
+
+            graPropFrameStates[frameIndex] = new PropFrameState(
+                propScreenPosition,
+                numPropScale != null ? numPropScale.Value : 1m,
+                numPropRotation != null ? (float)numPropRotation.Value : 0f);
+        }
+
+        private void RestorePropFrameState(int frameIndex)
+        {
+            if (frameIndex < 0 || frameIndex >= loadedGraFrames.Count)
+            {
+                hasPropPosition = true;
+                propScreenPosition = new Point(canvas.Width / 2, canvas.Height / 2);
+                return;
+            }
+
+            PropFrameState frameState = GetPropFrameState(frameIndex, true);
+            propScreenPosition = frameState.Center;
+            hasPropPosition = true;
+            if (numPropScale != null) numPropScale.Value = frameState.Scale;
+            if (numPropRotation != null) numPropRotation.Value = (decimal)frameState.Rotation;
         }
 
         // ─────────────────────────────────────────────────────────────────────
@@ -387,7 +479,7 @@ namespace QFG5Extractor.Core
             toolTip.SetToolTip(btnSave,    "Save the texture to disk as PNG or BMP");
             toolTip.SetToolTip(btnProps, "Show the prop sticker gallery and placement controls");
             toolTip.SetToolTip(btnInjectMdl, "Palette-preserving re-injection into the source MDL");
-            toolTip.SetToolTip(btnInjectGra, "Write the edited frame back into its source GRA file, or inject a panorama opened from Pano Editor.");
+            toolTip.SetToolTip(btnInjectGra, "Write the edited frame back into its source GRA file, or inject a panorama opened from Pano Extractor IMG/NOD.");
             toolTip.SetToolTip(btnUndo,    "Undo the last drawing stroke or image adjustment");
             toolTip.SetToolTip(btnResetOriginal, "Restore the original extracted texture, using the saved pre-injection MDL backup when available");
 
@@ -643,6 +735,28 @@ namespace QFG5Extractor.Core
             btnAddPngProp.Click += (s, e) => AddCustomPngProp();
             toolTip.SetToolTip(btnAddPngProp, "Add a transparent PNG as a custom prop.");
             propControls.Controls.Add(btnAddPngProp);
+            Button btnAddGifProp = MakeHeaderBtn("Add GIF", 70);
+            btnAddGifProp.Height = 28;
+            btnAddGifProp.Margin = new Padding(3, 0, 3, 0);
+            btnAddGifProp.Click += (s, e) => AddCustomGifProp();
+            toolTip.SetToolTip(btnAddGifProp, "Add an animated GIF as a custom prop.");
+            propControls.Controls.Add(btnAddGifProp);
+            propControls.Controls.Add(MakePropOptionLabel("GIF map"));
+            cmbGifFrameMapping = new ComboBox
+            {
+                DropDownStyle = ComboBoxStyle.DropDownList,
+                Width = 76,
+                Height = 26,
+                BackColor = QFG5Theme.ColorSurface,
+                ForeColor = QFG5Theme.ColorTextPrimary,
+                Font = QFG5Theme.BodyFont,
+                Margin = new Padding(2, 1, 8, 0)
+            };
+            cmbGifFrameMapping.Items.AddRange(new object[] { "Cycle", "Span" });
+            cmbGifFrameMapping.SelectedIndex = 0;
+            propControls.Controls.Add(cmbGifFrameMapping);
+            toolTip.SetToolTip(cmbGifFrameMapping,
+                "When Shift-clicking a GIF onto a GRA: Cycle repeats frames, while Span maps the GIF from its first to last frame.");
             propControls.Controls.Add(MakePropOptionLabel("Rotate"));
             numPropRotation = new NumericUpDown {
                 Minimum = -180,
@@ -664,8 +778,16 @@ namespace QFG5Extractor.Core
             btnCancelProp.Click += (s, e) => CancelPropPlacement();
             propControls.Controls.Add(btnCancelProp);
             propPanel.Controls.Add(propControls, 0, 1);
-            numPropScale.ValueChanged += (s, e) => canvas.Invalidate();
-            numPropRotation.ValueChanged += (s, e) => canvas.Invalidate();
+            numPropScale.ValueChanged += (s, e) => {
+                if (currentTool == "Prop" && loadedGraFrameIndex >= 0 && loadedGraFrames.Count > 0)
+                    StorePropFrameState(loadedGraFrameIndex);
+                canvas.Invalidate();
+            };
+            numPropRotation.ValueChanged += (s, e) => {
+                if (currentTool == "Prop" && loadedGraFrameIndex >= 0 && loadedGraFrames.Count > 0)
+                    StorePropFrameState(loadedGraFrameIndex);
+                canvas.Invalidate();
+            };
             centerColumn.Controls.Add(propPanel, 0, 2);
 
             Label lblPalette = MakePropertyLabel("GAME HIGH-COLOR SAMPLES (RGB555)");
@@ -933,12 +1055,24 @@ namespace QFG5Extractor.Core
                 return;
             }
 
+            if (loadedGraFrameIndex >= 0 && loadedGraFrames.Count > 0)
+                StorePropFrameState(loadedGraFrameIndex);
+            propAnimationTimer.Stop();
             if (selectedPropImage != null) selectedPropImage.Dispose();
             selectedProp = prop;
+            selectedAnimatedProp = thumbnail.Tag as AnimatedProp;
+            selectedAnimatedPropFrame = 0;
             Bitmap customImage = thumbnail.Tag as Bitmap;
-            selectedPropImage = customImage == null
-                ? CreatePropSticker(prop)
-                : FitPropImage(customImage, 96, 64);
+            selectedPropImage = selectedAnimatedProp != null
+                ? (Bitmap)selectedAnimatedProp.Frames[0].Clone()
+                : customImage == null
+                    ? CreatePropSticker(prop)
+                    : FitPropImage(customImage, 96, 64);
+            if (selectedAnimatedProp != null && selectedAnimatedProp.Frames.Count > 1)
+            {
+                propAnimationTimer.Interval = selectedAnimatedProp.FrameDelays[0];
+                propAnimationTimer.Start();
+            }
             foreach (Control control in propThumbnailList.Controls)
             {
                 Button button = control as Button;
@@ -948,11 +1082,38 @@ namespace QFG5Extractor.Core
                         : QFG5Theme.ColorBorderOuter;
             }
             currentTool = "Prop";
-            propScreenPosition = new Point(canvas.Width / 2, canvas.Height / 2);
-            hasPropPosition = true;
+            if (loadedGraFrameIndex >= 0 && loadedGraFrames.Count > 0)
+            {
+                RestorePropFrameState(loadedGraFrameIndex);
+            }
+            else
+            {
+                propScreenPosition = new Point(canvas.Width / 2, canvas.Height / 2);
+                hasPropPosition = true;
+            }
             canvas.Cursor = Cursors.Cross;
             canvas.Invalidate();
             SetStatus("Move the preview; scroll to resize, click to apply, or Shift-click to apply to all GRA frames.");
+        }
+
+        private void PropAnimationTimer_Tick(object sender, EventArgs e)
+        {
+            if (selectedAnimatedProp == null || selectedAnimatedProp.Frames.Count < 2)
+            {
+                propAnimationTimer.Stop();
+                return;
+            }
+
+            selectedAnimatedPropFrame =
+                (selectedAnimatedPropFrame + 1) % selectedAnimatedProp.Frames.Count;
+            if (selectedPropImage != null)
+                selectedPropImage.Dispose();
+            selectedPropImage =
+                (Bitmap)selectedAnimatedProp.Frames[selectedAnimatedPropFrame].Clone();
+            propAnimationTimer.Interval =
+                selectedAnimatedProp.FrameDelays[selectedAnimatedPropFrame];
+            if (canvas != null)
+                canvas.Invalidate();
         }
 
         private void AddCustomPngProp()
@@ -1027,6 +1188,140 @@ namespace QFG5Extractor.Core
             }
         }
 
+        private void AddCustomGifProp()
+        {
+            using (OpenFileDialog dialog = new OpenFileDialog
+            {
+                Filter = "GIF images|*.gif",
+                Title = "Add an animated GIF prop"
+            })
+            {
+                if (dialog.ShowDialog() != DialogResult.OK)
+                    return;
+
+                AnimatedProp customProp = null;
+                Bitmap thumbnailImage = null;
+                Button thumbnail = null;
+                bool addedToGallery = false;
+                try
+                {
+                    customProp = LoadAnimatedProp(dialog.FileName);
+                    string propName = Path.GetFileNameWithoutExtension(dialog.FileName);
+                    thumbnailImage = CreatePropThumbnail(customProp.Frames[0]);
+                    thumbnail = new Button
+                    {
+                        Width = 92,
+                        Height = 68,
+                        Text = propName,
+                        Image = thumbnailImage,
+                        ImageAlign = ContentAlignment.TopCenter,
+                        TextAlign = ContentAlignment.BottomCenter,
+                        TextImageRelation = TextImageRelation.ImageAboveText,
+                        FlatStyle = FlatStyle.Flat,
+                        BackColor = QFG5Theme.ColorSurface,
+                        ForeColor = QFG5Theme.ColorTextPrimary,
+                        UseVisualStyleBackColor = false,
+                        Margin = new Padding(2),
+                        Tag = customProp
+                    };
+                    thumbnail.FlatAppearance.BorderColor = QFG5Theme.ColorBorderOuter;
+                    thumbnail.FlatAppearance.BorderSize = 1;
+                    thumbnail.Click += (s, e) => SelectProp(propName, thumbnail);
+                    toolTip.SetToolTip(thumbnail,
+                        "Select " + propName + ", scroll over the canvas to resize, and click to apply.");
+                    propThumbnailList.Controls.Add(thumbnail);
+                    addedToGallery = true;
+                    customProp = null;
+                    thumbnailImage = null;
+                    SelectProp(propName, thumbnail);
+                }
+                catch (Exception ex)
+                {
+                    if (!addedToGallery)
+                    {
+                        if (thumbnail != null)
+                            thumbnail.Dispose();
+                        if (thumbnailImage != null)
+                            thumbnailImage.Dispose();
+                        DisposeAnimatedProp(customProp);
+                    }
+                    SetStatus("Could not load custom GIF prop.");
+                    Logger.LogError("TextureEditorTab", "Could not load custom GIF prop: " + ex.Message);
+                    MessageBox.Show("Could not load the GIF prop: " + ex.Message,
+                        "Texture Editor", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                }
+            }
+        }
+
+        private static AnimatedProp LoadAnimatedProp(string path)
+        {
+            List<Bitmap> frames = new List<Bitmap>();
+            try
+            {
+                using (Image image = Image.FromFile(path))
+                {
+                    if (image.RawFormat.Guid != ImageFormat.Gif.Guid)
+                        throw new InvalidDataException("Custom animated props must be GIF images.");
+
+                    int frameCount = image.GetFrameCount(FrameDimension.Time);
+                    if (frameCount < 1)
+                        throw new InvalidDataException("The GIF does not contain any readable frames.");
+
+                    int[] frameDelays = ReadGifFrameDelays(image, frameCount);
+                    for (int frameIndex = 0; frameIndex < frameCount; frameIndex++)
+                    {
+                        image.SelectActiveFrame(FrameDimension.Time, frameIndex);
+                        using (Bitmap sourceFrame = new Bitmap(image))
+                            frames.Add(FitPropImage(sourceFrame, 96, 64));
+                    }
+                    return new AnimatedProp(frames, frameDelays);
+                }
+            }
+            catch
+            {
+                foreach (Bitmap frame in frames)
+                    frame.Dispose();
+                throw;
+            }
+        }
+
+        private static int[] ReadGifFrameDelays(Image image, int frameCount)
+        {
+            int[] delays = Enumerable.Repeat(DefaultGifFrameDelayMs, frameCount).ToArray();
+            PropertyItem delayProperty;
+            try
+            {
+                delayProperty = image.GetPropertyItem(0x5100);
+            }
+            catch (ArgumentException)
+            {
+                return delays;
+            }
+
+            byte[] values = delayProperty.Value;
+            if (values == null)
+                return delays;
+            int availableDelays = Math.Min(frameCount, values.Length / sizeof(int));
+            for (int frameIndex = 0; frameIndex < availableDelays; frameIndex++)
+            {
+                int delayCentiseconds = BitConverter.ToInt32(values, frameIndex * sizeof(int));
+                if (delayCentiseconds <= 0)
+                    continue;
+                long delayMilliseconds = (long)delayCentiseconds * 10;
+                delays[frameIndex] = (int)Math.Max(MinimumGifFrameDelayMs,
+                    Math.Min(60000L, delayMilliseconds));
+            }
+            return delays;
+        }
+
+        private static void DisposeAnimatedProp(AnimatedProp prop)
+        {
+            if (prop == null)
+                return;
+            foreach (Bitmap frame in prop.Frames)
+                frame.Dispose();
+        }
+
         private void ApplySelectedProp(bool applyToAllGraFrames = false)
         {
             if (currentBitmap == null || selectedPropImage == null || !hasPropPosition)
@@ -1034,6 +1329,9 @@ namespace QFG5Extractor.Core
                 SetStatus("Select a prop and position its preview on the canvas first.");
                 return;
             }
+
+            if (loadedGraFrameIndex >= 0 && loadedGraFrames.Count > 0)
+                StorePropFrameState(loadedGraFrameIndex);
 
             int imageX, imageY;
             ScreenToImage(propScreenPosition.X, propScreenPosition.Y, out imageX, out imageY);
@@ -1062,7 +1360,13 @@ namespace QFG5Extractor.Core
                     int frameY = frame.Height > 1
                         ? (int)Math.Round(relativeY * (frame.Height - 1))
                         : 0;
-                    DrawPropSticker(frame, frameX, frameY);
+                    PropFrameState frameState = GetPropFrameState(frameIndex);
+                    Bitmap frameProp = selectedAnimatedProp == null
+                        ? selectedPropImage
+                        : selectedAnimatedProp.Frames[
+                            GetAnimatedPropFrameForGra(frameIndex, loadedGraFrames.Count)];
+                    DrawPropSticker(frame, frameX, frameY, frameProp,
+                        frameState.Scale, frameState.Rotation);
                     if (frameIndex != loadedGraFrameIndex)
                     {
                         dirtyGraFrames[frameIndex] = true;
@@ -1075,13 +1379,31 @@ namespace QFG5Extractor.Core
             }
             else
             {
-                DrawPropSticker(currentBitmap, imageX, imageY);
+                PropFrameState currentFrameState = GetPropFrameState(loadedGraFrameIndex, true);
+                DrawPropSticker(currentBitmap, imageX, imageY, null,
+                    currentFrameState.Scale, currentFrameState.Rotation);
                 if (loadedGraFrameIndex >= 0)
                     StoreCurrentGraFrame();
                 SetStatus("Applied " + selectedProp + ".");
             }
             SelectTool("Pencil");
             canvas.Invalidate();
+        }
+
+        private int GetAnimatedPropFrameForGra(int graFrameIndex, int graFrameCount)
+        {
+            if (selectedAnimatedProp == null || selectedAnimatedProp.Frames.Count < 2)
+                return 0;
+            if ((cmbGifFrameMapping.SelectedItem as string) == "Span")
+            {
+                if (graFrameCount <= 1)
+                    return 0;
+                return (int)Math.Round(
+                    (double)graFrameIndex * (selectedAnimatedProp.Frames.Count - 1) /
+                    (graFrameCount - 1),
+                    MidpointRounding.AwayFromZero);
+            }
+            return graFrameIndex % selectedAnimatedProp.Frames.Count;
         }
 
         private void CancelPropPlacement()
@@ -1295,7 +1617,10 @@ namespace QFG5Extractor.Core
         {
             if (tool != "Prop")
             {
+                if (propAnimationTimer != null)
+                    propAnimationTimer.Stop();
                 selectedProp = null;
+                selectedAnimatedProp = null;
                 hasPropPosition = false;
                 if (selectedPropImage != null)
                 {
@@ -1848,20 +2173,25 @@ namespace QFG5Extractor.Core
             }
         }
 
-        private void DrawPropSticker(Bitmap targetBitmap, int centerX, int centerY)
+        private void DrawPropSticker(Bitmap targetBitmap, int centerX, int centerY,
+            Bitmap propImage = null, decimal? scaleOverride = null, float? rotationOverride = null)
         {
-            if (selectedPropImage == null || numPropScale == null || numPropRotation == null)
+            if (propImage == null)
+                propImage = selectedPropImage;
+            if (propImage == null || numPropScale == null || numPropRotation == null)
                 return;
+            decimal scaleValue = scaleOverride ?? numPropScale.Value;
+            float rotationValue = rotationOverride ?? (float)numPropRotation.Value;
             float width = Math.Max(8f, Math.Min(96f, targetBitmap.Width * 0.55f)) *
-                (float)numPropScale.Value;
+                (float)scaleValue;
             float height = width * 2f / 3f;
             using (Graphics graphics = Graphics.FromImage(targetBitmap))
             {
                 graphics.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
                 graphics.TranslateTransform(centerX, centerY);
-                graphics.RotateTransform((float)numPropRotation.Value);
+                graphics.RotateTransform(rotationValue);
                 graphics.ScaleTransform(width / 96f, height / 64f);
-                graphics.DrawImage(selectedPropImage, -48, -32, 96, 64);
+                graphics.DrawImage(propImage, -48, -32, 96, 64);
             }
         }
 
@@ -2472,12 +2802,19 @@ namespace QFG5Extractor.Core
 
             if (currentTool == "Prop" && selectedPropImage != null && hasPropPosition)
             {
+                PropFrameState previewState = loadedGraFrameIndex >= 0 && loadedGraFrames.Count > 0
+                    ? GetPropFrameState(loadedGraFrameIndex, false)
+                    : null;
+                if (previewState == null)
+                    previewState = new PropFrameState(propScreenPosition,
+                        numPropScale != null ? numPropScale.Value : 1m,
+                        numPropRotation != null ? (float)numPropRotation.Value : 0f);
                 float width = Math.Max(8f, Math.Min(96f, currentBitmap.Width * 0.55f)) *
-                    (float)numPropScale.Value * actualScale;
+                    (float)previewState.Scale * actualScale;
                 float height = width * 2f / 3f;
                 System.Drawing.Drawing2D.GraphicsState state = e.Graphics.Save();
-                e.Graphics.TranslateTransform(propScreenPosition.X, propScreenPosition.Y);
-                e.Graphics.RotateTransform((float)numPropRotation.Value);
+                e.Graphics.TranslateTransform(previewState.Center.X, previewState.Center.Y);
+                e.Graphics.RotateTransform(previewState.Rotation);
                 using (ImageAttributes attributes = new ImageAttributes())
                 {
                     ColorMatrix opacity = new ColorMatrix();
@@ -3039,7 +3376,7 @@ namespace QFG5Extractor.Core
             if (currentBitmap == null || !File.Exists(loadedPanoNodPath) ||
                 !File.Exists(loadedPanoImgPath))
             {
-                MessageBox.Show("The source panorama files are no longer available. Reopen the image from Pano Editor.",
+                MessageBox.Show("The source panorama files are no longer available. Reopen the image from Pano Extractor IMG/NOD.",
                     "Panorama Injection", MessageBoxButtons.OK, MessageBoxIcon.Warning);
                 return;
             }
@@ -3265,6 +3602,11 @@ namespace QFG5Extractor.Core
             {
                 Application.RemoveMessageFilter(this);
                 if (toolTip != null) toolTip.Dispose();
+                if (propAnimationTimer != null)
+                {
+                    propAnimationTimer.Stop();
+                    propAnimationTimer.Dispose();
+                }
                 if (currentBitmap != null) currentBitmap.Dispose();
                 if (originalBitmap != null) originalBitmap.Dispose();
                 if (selectedPropImage != null) selectedPropImage.Dispose();
@@ -3282,6 +3624,12 @@ namespace QFG5Extractor.Core
                         }
                         if (button != null)
                         {
+                            AnimatedProp animatedProp = button.Tag as AnimatedProp;
+                            if (animatedProp != null)
+                            {
+                                DisposeAnimatedProp(animatedProp);
+                                button.Tag = null;
+                            }
                             Bitmap customImage = button.Tag as Bitmap;
                             if (customImage != null)
                             {

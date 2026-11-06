@@ -10,7 +10,7 @@
     <AppDesignerFolder>Properties</AppDesignerFolder>
     <RootNamespace>QFG5Extractor</RootNamespace>
     <AssemblyName>QFG5Extractor</AssemblyName>
-    <TargetFrameworkVersion>v4.5</TargetFrameworkVersion>
+    <TargetFrameworkVersion>v4.0</TargetFrameworkVersion>
     <FileAlignment>512</FileAlignment>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
   </PropertyGroup>
@@ -79,6 +79,7 @@
     <Compile Include="Resources\Panorama\PanoConverter.cs" />
     <Compile Include="Resources\Panorama\RoomLocationCatalog.cs" />
     <Compile Include="Resources\Panorama\RoomStudioTab.cs" />
+    <Compile Include="Resources\Panorama\FtrConverter.cs" />
     <Compile Include="Resources\Message\MsgTab.cs" />
     <Compile Include="Resources\Message\MsgConverter.cs" />
     <Compile Include="Resources\Model\ModelTab.cs" />
@@ -93,6 +94,7 @@
     <Compile Include="Resources\Model\NormalGenerator.cs" />
     <Compile Include="Resources\Model\MeshLoader.cs" />
     <Compile Include="Resources\Model\AnmAnimationLoader.cs" />
+    <Compile Include="Resources\Model\AnmRetargetTab.cs" />
     <Compile Include="Viewers\Model\MdlViewer.cs" />
     <Compile Include="Resources\Model\ModelDatabase.cs" />
     <Compile Include="Core\Logger.cs" />
@@ -105,6 +107,7 @@
     <Compile Include="Resources\Save\SaveSession.cs" />
     <Compile Include="Resources\Save\SaveTab.cs" />
     <Compile Include="Resources\Save\FlagsTab.cs" />
+    <Compile Include="Resources\Save\PatchesTab.cs" />
     <Compile Include="Resources\Save\ItemDatabase.cs" />
     <Compile Include="Core\UI\QFG5Theme.cs" />
     <Compile Include="Core\UI\QFG5Button.cs" />
@@ -114,6 +117,8 @@
     <Compile Include="Core\UI\QFG5Layouts.cs" />
     <Compile Include="Resources\Gra\GraTab.cs" />
     <Compile Include="Resources\Gra\GraConverter.cs" />
+    <Compile Include="Resources\Audio\AudioTab.cs" />
+    <Compile Include="Resources\Audio\AudioResourceInspector.cs" />
     <Compile Include="Core\SharedState.cs" />
     <Compile Include="Core\SettingsTab.cs" />
     <Compile Include="Resources\Save\IconMapperTab.cs" />
@@ -133,6 +138,12 @@
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </None>
     <EmbeddedResource Include="Resources\Gra\gra-column-major-defaults.txt" />
+    <EmbeddedResource Include="..\UI Kit\*.png" />
+    <EmbeddedResource Include="..\UI Kit\*.jpg" />
+    <EmbeddedResource Include="..\UI Kit\Menu Graphics\*.png" />
+    <EmbeddedResource Include="..\UI Kit\Inventory Graphics\Equipment\*.png" />
+    <EmbeddedResource Include="..\UI Kit\Inventory Graphics\Items\*.png" />
+    <EmbeddedResource Include="..\UI Kit\Inventory Graphics\Spells\*.png" />
   </ItemGroup>
   <Import Project="$(MSBuildToolsPath)\Microsoft.CSharp.targets" />
 </Project>

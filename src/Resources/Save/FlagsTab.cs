@@ -11,7 +11,10 @@ namespace QFG5Extractor.Resources.Save
     public class FlagsTab : UserControl
     {
         private DataGridView gridFlags;
+        private TextBox searchBox;
+        private Button toggleSelectedButton;
         private List<string> flagNames;
+        private readonly HashSet<int> checkedFlagIndices = new HashSet<int>();
         private readonly SaveSession session;
         private Label statusLabel;
         private bool refreshingGrid;
@@ -34,11 +37,52 @@ namespace QFG5Extractor.Resources.Save
             QFG5TableLayoutPanel mainLayout = new QFG5TableLayoutPanel {
                 Dock = DockStyle.Fill,
                 ColumnCount = 1,
-                RowCount = 2,
+                RowCount = 3,
                 Padding = new Padding(QFG5Layout.ContentPadding)
             };
+            mainLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 42));
             mainLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
             mainLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, QFG5Layout.StatusRowHeight));
+
+            QFG5TableLayoutPanel toolbar = new QFG5TableLayoutPanel
+            {
+                Dock = DockStyle.Fill,
+                ColumnCount = 3,
+                RowCount = 1,
+                Margin = new Padding(0)
+            };
+            toolbar.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+            toolbar.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 150));
+            toolbar.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 260));
+            toolbar.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+
+            searchBox = new TextBox
+            {
+                Dock = DockStyle.Fill,
+                Font = QFG5Theme.BodyFont,
+                Margin = new Padding(0, 4, 8, 4),
+                AccessibleName = "Search flags by name or index"
+            };
+            searchBox.TextChanged += (s, e) => ApplySearchFilter();
+
+            toggleSelectedButton = new QFG5Button
+            {
+                Text = "Toggle Selected",
+                Dock = DockStyle.Fill,
+                Margin = new Padding(0, 3, 8, 3),
+                Enabled = false
+            };
+            toggleSelectedButton.Click += (s, e) => ToggleSelectedFlags();
+
+            Label selectionHelp = new Label
+            {
+                Text = "Check flags or Ctrl+click rows. Shift+click a value to set checked flags to that value.",
+                Dock = DockStyle.Fill,
+                TextAlign = ContentAlignment.MiddleLeft,
+                ForeColor = QFG5Theme.ColorTextMuted,
+                Font = QFG5Theme.CaptionFont,
+                AutoEllipsis = true
+            };
 
             gridFlags = new DataGridView
             {
@@ -51,6 +95,7 @@ namespace QFG5Extractor.Resources.Save
                 GridColor = QFG5Theme.ColorBorderOuter,
                 BorderStyle = BorderStyle.None,
                 SelectionMode = DataGridViewSelectionMode.FullRowSelect,
+                MultiSelect = true,
                 RowHeadersVisible = false,
                 AutoSizeColumnsMode = DataGridViewAutoSizeColumnsMode.Fill,
                 Font = QFG5Theme.BodyFont,
@@ -72,18 +117,36 @@ namespace QFG5Extractor.Resources.Save
             gridFlags.ColumnHeadersDefaultCellStyle.Padding = new Padding(6, 2, 4, 2);
             gridFlags.EnableHeadersVisualStyles = false;
 
-            gridFlags.Columns.Add(new DataGridViewTextBoxColumn { Name = "Index", HeaderText = "Index", ReadOnly = true, Width = 60 });
-            gridFlags.Columns.Add(new DataGridViewTextBoxColumn { Name = "Name", HeaderText = "Flag Name", ReadOnly = true, Width = 300 });
+            gridFlags.Columns.Add(new DataGridViewCheckBoxColumn
+            {
+                Name = "Select",
+                HeaderText = "Select",
+                Width = 62,
+                FillWeight = 18,
+                ThreeState = false,
+                TrueValue = true,
+                FalseValue = false
+            });
+            gridFlags.Columns.Add(new DataGridViewTextBoxColumn { Name = "Index", HeaderText = "Index", ReadOnly = true, Width = 60, FillWeight = 18 });
+            gridFlags.Columns.Add(new DataGridViewTextBoxColumn { Name = "Name", HeaderText = "Flag Name", ReadOnly = true, Width = 300, FillWeight = 100 });
             gridFlags.Columns.Add(new DataGridViewButtonColumn {
                 Name = "Value",
                 HeaderText = "Value",
                 Width = 90,
+                FillWeight = 30,
                 FlatStyle = FlatStyle.Flat,
                 UseColumnTextForButtonValue = false
             });
 
             gridFlags.CellContentClick += GridFlags_CellContentClick;
             gridFlags.CellPainting += GridFlags_CellPainting;
+            gridFlags.CurrentCellDirtyStateChanged += (s, e) =>
+            {
+                if (gridFlags.IsCurrentCellDirty &&
+                    gridFlags.CurrentCell is DataGridViewCheckBoxCell)
+                    gridFlags.CommitEdit(DataGridViewDataErrorContexts.Commit);
+            };
+            gridFlags.CellValueChanged += GridFlags_CellValueChanged;
 
             QFG5PreviewFrame gridFrame = new QFG5PreviewFrame { Dock = DockStyle.Fill };
             gridFrame.Controls.Add(gridFlags);
@@ -96,8 +159,12 @@ namespace QFG5Extractor.Resources.Save
                 TextAlign = ContentAlignment.MiddleLeft
             };
 
-            mainLayout.Controls.Add(gridFrame, 0, 0);
-            mainLayout.Controls.Add(statusLabel, 0, 1);
+            toolbar.Controls.Add(searchBox, 0, 0);
+            toolbar.Controls.Add(toggleSelectedButton, 1, 0);
+            toolbar.Controls.Add(selectionHelp, 2, 0);
+            mainLayout.Controls.Add(toolbar, 0, 0);
+            mainLayout.Controls.Add(gridFrame, 0, 1);
+            mainLayout.Controls.Add(statusLabel, 0, 2);
 
             this.Controls.Add(mainLayout);
         }
@@ -106,11 +173,10 @@ namespace QFG5Extractor.Resources.Save
         {
             var swFlags = System.Diagnostics.Stopwatch.StartNew();
             string flagPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "flags.dat");
-            // Also check parent directories
             string[] searchPaths = {
                 Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "../../../../Resources/QG5Edit/flags.dat"),
-                flagPath, 
-                "flags.dat", 
+                flagPath,
+                "flags.dat",
                 "../flags.dat",
                 "../../flags.dat",
                 "../../../flags.dat",
@@ -176,6 +242,57 @@ namespace QFG5Extractor.Resources.Save
             UpdateLoadFeedback(null);
         }
 
+        public bool TryGetFlagByName(string name, out bool value, out string error)
+        {
+            value = false;
+            error = null;
+            if (!session.IsLoaded)
+            {
+                error = "Load a QG5 save before applying a patch.";
+                return false;
+            }
+
+            int flagIndex = FindFlagIndex(name);
+            if (flagIndex < 0)
+            {
+                error = "The flag name '" + name + "' is not present in the loaded flag-name list.";
+                return false;
+            }
+            if (!session.CanEditFlags)
+            {
+                error = session.FlagsUnavailableReason ??
+                    "The save's flag data could not be located safely.";
+                return false;
+            }
+            if (!session.TryGetFlag(flagIndex, flagNames.Count, out value))
+            {
+                error = "The named flag could not be read safely from this save.";
+                return false;
+            }
+
+            return true;
+        }
+
+        public bool TrySetFlagByName(string name, bool value, out string error)
+        {
+            error = null;
+            if (!TryGetFlagByName(name, out bool currentValue, out error))
+                return false;
+
+            int flagIndex = FindFlagIndex(name);
+            if (currentValue != value)
+                session.SetFlag(flagIndex, flagNames.Count, value);
+            RefreshGrid();
+            return true;
+        }
+
+        private int FindFlagIndex(string name)
+        {
+            if (string.IsNullOrWhiteSpace(name)) return -1;
+            return flagNames.FindIndex(flagName =>
+                string.Equals(flagName, name, StringComparison.OrdinalIgnoreCase));
+        }
+
         private void RefreshGrid()
         {
             refreshingGrid = true;
@@ -185,12 +302,13 @@ namespace QFG5Extractor.Resources.Save
                 for (int i = 0; i < flagNames.Count; i++)
                 {
                     bool hasValue = session.TryGetFlag(i, flagNames.Count, out bool value);
-                    gridFlags.Rows.Add(i, flagNames[i],
+                    gridFlags.Rows.Add(checkedFlagIndices.Contains(i), i, flagNames[i],
                         hasValue ? (value ? "True" : "False") : "Unknown");
                 }
 
-                gridFlags.Columns["Value"].ReadOnly =
-                    !session.CanEditFlags;
+                gridFlags.Columns["Value"].ReadOnly = !session.CanEditFlags;
+                ApplySearchFilter();
+                toggleSelectedButton.Enabled = session.CanEditFlags;
             }
             finally
             {
@@ -198,17 +316,112 @@ namespace QFG5Extractor.Resources.Save
             }
         }
 
+        private void ApplySearchFilter()
+        {
+            if (gridFlags == null) return;
+            string query = searchBox.Text.Trim();
+            for (int i = 0; i < gridFlags.Rows.Count; i++)
+            {
+                DataGridViewRow row = gridFlags.Rows[i];
+                string index = Convert.ToString(row.Cells["Index"].Value);
+                string name = Convert.ToString(row.Cells["Name"].Value);
+                row.Visible = query.Length == 0 ||
+                    index.IndexOf(query, StringComparison.OrdinalIgnoreCase) >= 0 ||
+                    name.IndexOf(query, StringComparison.OrdinalIgnoreCase) >= 0;
+            }
+        }
+
+        private void GridFlags_CellValueChanged(object sender, DataGridViewCellEventArgs e)
+        {
+            if (refreshingGrid || e.RowIndex < 0 || e.ColumnIndex < 0 ||
+                gridFlags.Columns[e.ColumnIndex].Name != "Select")
+                return;
+
+            int flagIndex = Convert.ToInt32(gridFlags.Rows[e.RowIndex].Cells["Index"].Value);
+            if (Convert.ToBoolean(gridFlags.Rows[e.RowIndex].Cells["Select"].Value))
+                checkedFlagIndices.Add(flagIndex);
+            else
+                checkedFlagIndices.Remove(flagIndex);
+        }
+
         private void GridFlags_CellContentClick(object sender, DataGridViewCellEventArgs e)
         {
             if (refreshingGrid || !session.CanEditFlags ||
                 e.RowIndex < 0 || e.ColumnIndex < 0 ||
                 gridFlags.Columns[e.ColumnIndex].Name != "Value") return;
-            int flagIndex = (int)gridFlags.Rows[e.RowIndex].Cells["Index"].Value;
+
+            int flagIndex = Convert.ToInt32(gridFlags.Rows[e.RowIndex].Cells["Index"].Value);
             if (!session.TryGetFlag(flagIndex, flagNames.Count, out bool currentValue)) return;
             bool newValue = !currentValue;
+            if ((Control.ModifierKeys & Keys.Shift) == Keys.Shift)
+            {
+                HashSet<int> targets = new HashSet<int>(checkedFlagIndices);
+                if (targets.Count == 0)
+                    targets.Add(flagIndex);
+                SetFlags(targets, newValue);
+                UpdateLoadFeedback("Set " + targets.Count + " selected flag(s) to " +
+                    (newValue ? "True." : "False."));
+                return;
+            }
+
             session.SetFlag(flagIndex, flagNames.Count, newValue);
             gridFlags.Rows[e.RowIndex].Cells["Value"].Value = newValue ? "True" : "False";
             UpdateLoadFeedback("Flag " + flagIndex + " set to " + (newValue ? "True." : "False."));
+        }
+
+        private void ToggleSelectedFlags()
+        {
+            if (!session.CanEditFlags) return;
+            HashSet<int> targets = GetSelectedFlagIndices();
+            if (targets.Count == 0)
+            {
+                UpdateLoadFeedback("Check flags or select rows before using Toggle Selected.");
+                return;
+            }
+
+            foreach (int flagIndex in targets)
+            {
+                if (!session.TryGetFlag(flagIndex, flagNames.Count, out bool currentValue))
+                    continue;
+                session.SetFlag(flagIndex, flagNames.Count, !currentValue);
+                UpdateFlagValueCell(flagIndex, !currentValue);
+            }
+            UpdateLoadFeedback("Toggled " + targets.Count + " selected flag(s).");
+        }
+
+        private HashSet<int> GetSelectedFlagIndices()
+        {
+            HashSet<int> targets = new HashSet<int>(checkedFlagIndices);
+            foreach (DataGridViewRow row in gridFlags.SelectedRows)
+            {
+                if (row.IsNewRow) continue;
+                targets.Add(Convert.ToInt32(row.Cells["Index"].Value));
+            }
+            return targets;
+        }
+
+        private void SetFlags(IEnumerable<int> flagIndices, bool value)
+        {
+            foreach (int flagIndex in flagIndices)
+            {
+                if (!session.TryGetFlag(flagIndex, flagNames.Count, out bool currentValue))
+                    continue;
+                if (currentValue != value)
+                    session.SetFlag(flagIndex, flagNames.Count, value);
+                UpdateFlagValueCell(flagIndex, value);
+            }
+        }
+
+        private void UpdateFlagValueCell(int flagIndex, bool value)
+        {
+            foreach (DataGridViewRow row in gridFlags.Rows)
+            {
+                if (Convert.ToInt32(row.Cells["Index"].Value) == flagIndex)
+                {
+                    row.Cells["Value"].Value = value ? "True" : "False";
+                    return;
+                }
+            }
         }
 
         private void GridFlags_CellPainting(object sender, DataGridViewCellPaintingEventArgs e)

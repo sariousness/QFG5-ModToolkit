@@ -2,7 +2,9 @@ using QFG5Extractor.Core;
 using System;
 using System.Drawing;
 using System.IO;
+using System.Text;
 using System.Windows.Forms;
+using System.Collections.Generic;
 using QFG5Extractor.Core.UI;
 
 namespace QFG5Extractor.Storage.SPK
@@ -14,8 +16,11 @@ namespace QFG5Extractor.Storage.SPK
         private CheckBox uppercaseOutputNamesCheckBox;
         private CheckedListBox filesListBox;
         private Label statusLabel;
+        private Label auditIndicatorLabel;
         private Label lblSelectionCount;
         private QFG5ProgressBar progressBar;
+        private readonly List<SpkArchiveAuditResult> auditResults = new List<SpkArchiveAuditResult>();
+        private readonly List<string> auditErrors = new List<string>();
 
         public SpkTab()
         {
@@ -43,30 +48,48 @@ namespace QFG5Extractor.Storage.SPK
             QFG5TableLayoutPanel actionBar = new QFG5TableLayoutPanel
             {
                 Dock = DockStyle.Fill,
-                ColumnCount = 3,
+                ColumnCount = 5,
                 RowCount = 1,
                 Margin = new Padding(0, 0, 0, 4)
             };
             actionBar.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100f));
-            actionBar.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 100));
+            actionBar.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 70));
+            actionBar.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 80));
             actionBar.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 110));
-            actionBar.Controls.Add(new Label
+            actionBar.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 110));
+            auditIndicatorLabel = new Label
             {
-                Text = "SPK archives are read from DATA; extracted files follow the Mods folder structure.",
+                Text = "Audit: scanning archive entries...",
                 ForeColor = QFG5Theme.ColorTextMuted,
                 Font = QFG5Theme.CaptionFont,
                 Dock = DockStyle.Fill,
-                TextAlign = ContentAlignment.MiddleLeft
-            }, 0, 0);
+                TextAlign = ContentAlignment.MiddleLeft,
+                AutoEllipsis = true,
+                AccessibleName = "SPK archive audit summary"
+            };
+            toolTip.SetToolTip(auditIndicatorLabel,
+                "Missing counts archive entries without a matching file under Mods. Candidates are extensions outside the app's known dedicated workflows; this does not prove the file was not extracted.");
+            actionBar.Controls.Add(auditIndicatorLabel, 0, 0);
+
             QFG5Button btnScan = new QFG5Button { Text = "Scan", Dock = DockStyle.Fill, Height = 30 };
             btnScan.Click += (s, e) => LoadSpkFiles(SharedState.BaseDataPath);
             toolTip.SetToolTip(btnScan, "Rescan the configured DATA folder for SPK archives");
             actionBar.Controls.Add(btnScan, 1, 0);
 
+            QFG5Button btnAudit = new QFG5Button { Text = "Audit", Dock = DockStyle.Fill, Height = 30 };
+            btnAudit.Click += (s, e) => RefreshAudit();
+            toolTip.SetToolTip(btnAudit, "Recheck archive entries against files currently present under Mods");
+            actionBar.Controls.Add(btnAudit, 2, 0);
+
+            QFG5Button btnAuditDetails = new QFG5Button { Text = "Audit Details", Dock = DockStyle.Fill, Height = 30 };
+            btnAuditDetails.Click += (s, e) => ShowAuditDetails();
+            toolTip.SetToolTip(btnAuditDetails, "Show exact missing and candidate file paths from the SPK archives");
+            actionBar.Controls.Add(btnAuditDetails, 3, 0);
+
             runButton = new QFG5Button { Text = "Extract", Width = 95, Height = 30 };
             runButton.Click += RunButton_Click;
             toolTip.SetToolTip(runButton, "Extract checked SPK archives into their matching folders under Mods");
-            actionBar.Controls.Add(runButton, 2, 0);
+            actionBar.Controls.Add(runButton, 4, 0);
 
             // --- Row 3: Result / Archive List Area ---
             QFG5PreviewFrame listFrame = new QFG5PreviewFrame { Dock = DockStyle.Fill, Margin = new Padding(0, 0, 0, 6) };
@@ -203,6 +226,7 @@ namespace QFG5Extractor.Storage.SPK
             if (string.IsNullOrEmpty(folder) || !Directory.Exists(folder)) {
                 statusLabel.Text = "Data folder does not exist.";
                 UpdateSelectionStatus();
+                RefreshAudit();
                 return;
             }
 
@@ -217,9 +241,11 @@ namespace QFG5Extractor.Storage.SPK
                 else
                     statusLabel.Text = "No .SPK files found in folder.";
                 UpdateSelectionStatus();
+                RefreshAudit();
             } catch (Exception ex) {
                 statusLabel.Text = "Error scanning folder: " + ex.Message;
                 MessageBox.Show("Error scanning folder: " + ex.Message);
+                RefreshAudit();
             }
         }
 
@@ -264,9 +290,159 @@ namespace QFG5Extractor.Storage.SPK
             
             statusLabel.Text = $"Extracted {count} files successfully.";
             if (count > 0) SharedState.NotifyGameDataExtracted();
+            RefreshAudit();
             runButton.Enabled = true;
             repackButton.Enabled = true;
             MessageBox.Show("Extraction complete.");
+        }
+
+        private void RefreshAudit()
+        {
+            auditResults.Clear();
+            auditErrors.Clear();
+
+            string sourceFolder = SharedState.BaseDataPath;
+            if (filesListBox == null || filesListBox.Items.Count == 0)
+            {
+                auditIndicatorLabel.Text = "Audit: no SPK archives to check.";
+                auditIndicatorLabel.ForeColor = QFG5Theme.ColorTextMuted;
+                return;
+            }
+
+            int missingCount = 0;
+            int candidateCount = 0;
+            foreach (string fileName in filesListBox.Items)
+            {
+                string archivePath = Path.Combine(sourceFolder, fileName);
+                try
+                {
+                    SpkArchiveAuditResult result = SpkConverter.Audit(
+                        archivePath,
+                        SharedState.GetArchiveModsPath(fileName));
+                    auditResults.Add(result);
+                    missingCount += result.MissingFromModsCount;
+                    candidateCount += result.CandidateUnhandledCount;
+                }
+                catch (Exception ex)
+                {
+                    string error = fileName + ": " + ex.Message;
+                    auditErrors.Add(error);
+                    Logger.LogError("SpkTab", "Error auditing " + error);
+                }
+            }
+
+            auditIndicatorLabel.Text = string.Format(
+                "Audit: {0} missing; {1} candidates; {2} errors",
+                missingCount,
+                candidateCount,
+                auditErrors.Count);
+            auditIndicatorLabel.ForeColor = missingCount > 0 || candidateCount > 0 || auditErrors.Count > 0
+                ? QFG5Theme.ColorGold
+                : QFG5Theme.ColorTextMuted;
+        }
+
+        private void ShowAuditDetails()
+        {
+            Form detailsForm = new Form
+            {
+                Text = "SPK Archive Audit Details",
+                StartPosition = FormStartPosition.CenterParent,
+                Width = 780,
+                Height = 560,
+                MinimizeBox = false,
+                MaximizeBox = true
+            };
+            Panel filterPanel = new Panel { Dock = DockStyle.Top, Height = 34, Padding = new Padding(6) };
+            Label filterLabel = new Label
+            {
+                Text = "Filter archive / path:",
+                AutoSize = true,
+                Dock = DockStyle.Left,
+                TextAlign = ContentAlignment.MiddleLeft
+            };
+            TextBox filterTextBox = new TextBox { Dock = DockStyle.Fill };
+            RichTextBox detailsTextBox = new RichTextBox
+            {
+                ReadOnly = true,
+                ScrollBars = RichTextBoxScrollBars.Both,
+                WordWrap = false,
+                Dock = DockStyle.Fill,
+                Font = new Font("Consolas", 9f),
+            };
+            filterPanel.Controls.Add(filterTextBox);
+            filterPanel.Controls.Add(filterLabel);
+            detailsForm.Controls.Add(detailsTextBox);
+            detailsForm.Controls.Add(filterPanel);
+            filterTextBox.TextChanged += (s, e) => detailsTextBox.Text = BuildAuditDetails(filterTextBox.Text);
+            detailsTextBox.Text = BuildAuditDetails(string.Empty);
+            detailsForm.ShowDialog(this);
+        }
+
+        private string BuildAuditDetails(string filter)
+        {
+            StringBuilder details = new StringBuilder();
+            details.AppendLine("Missing from Mods");
+            details.AppendLine("Archive entries with no matching extracted file under that archive's Mods folder.");
+            details.AppendLine();
+            AppendAuditEntries(details, true, filter);
+
+            details.AppendLine();
+            details.AppendLine("Candidate formats not covered by a dedicated tool workflow");
+            details.AppendLine("Known workflow extensions: .GRA, .MDL, .ANM, .IMG, .NOD, .QGM, .FTR.");
+            details.AppendLine("These entries may have been extracted as raw files. Their extensions are candidates for investigation, not proof of missing data.");
+            details.AppendLine();
+            AppendAuditEntries(details, false, filter);
+
+            if (auditErrors.Count > 0)
+            {
+                details.AppendLine();
+                details.AppendLine("Archives that could not be audited");
+                int shownErrors = 0;
+                foreach (string error in auditErrors)
+                {
+                    if (MatchesAuditFilter(error, filter))
+                    {
+                        details.AppendLine("- " + error);
+                        shownErrors++;
+                    }
+                }
+                if (shownErrors == 0)
+                    details.AppendLine("None match this filter.");
+            }
+
+            if (auditResults.Count == 0 && auditErrors.Count == 0)
+                details.AppendLine("No SPK archives are available to audit.");
+            else if (auditResults.TrueForAll(result => result.MissingFromModsCount == 0 && result.CandidateUnhandledCount == 0)
+                && auditErrors.Count == 0)
+                details.AppendLine("No missing entries or candidate extensions were found.");
+            return details.ToString();
+        }
+
+        private void AppendAuditEntries(StringBuilder details, bool missingFromMods, string filter)
+        {
+            int count = 0;
+            foreach (SpkArchiveAuditResult result in auditResults)
+            {
+                foreach (SpkArchiveAuditEntry entry in result.Entries)
+                {
+                    if (missingFromMods ? entry.IsPresentInMods : entry.HasDedicatedToolSupport)
+                        continue;
+                    if (!MatchesAuditFilter(result.ArchiveFileName + " " + entry.FileName, filter))
+                        continue;
+
+                    details.AppendLine("- " + result.ArchiveFileName + ": " + entry.FileName);
+                    count++;
+                }
+            }
+
+            if (count == 0)
+                details.AppendLine("None.");
+        }
+
+        private static bool MatchesAuditFilter(string value, string filter)
+        {
+            return string.IsNullOrWhiteSpace(filter)
+                || value.IndexOf(filter.Trim(), StringComparison.OrdinalIgnoreCase) >= 0;
         }
 
         private void RepackButton_Click(object sender, EventArgs e)

@@ -39,13 +39,13 @@ namespace QFG5Extractor.Resources.Save
     {
         private const int MinimumSaveLength = 0x125C;
         private const int InventorySlotSize = SaveGameParser.INVENTORY_SLOT_SIZE;
-        private const int InventorySlotCount = SaveGameParser.INVENTORY_POOL_SIZE;
         private const int SaveHeaderLength = 18;
         private const int PlayerTypeLength = 4;
         private const int PlayerStateLength = 1096;
         private const int EngineStateLength = 1536;
         private const int ObjectStateRoomCount = 133;
         private const int MaximumFlagCount = 730;
+        private const int CharacterEquipmentLength = 172; // Nine 16-byte belt slots, two selectors, and five equipped IDs.
         private const int MinimumNoiseLength = 50;
         private const int MaximumNoiseLength = 150;
         private const int CharacterPlacementRecordLength = 32;
@@ -54,6 +54,7 @@ namespace QFG5Extractor.Resources.Save
         private const int CharacterZOffset = 12;
         private const int CharacterRotationOffset = 16;
         private const int CharacterSizeOffset = 28;
+        private const int CharacterModelOffsetAfterEngineState = 76;
         private const int CharacterModelOffsetBeforeRoomLabel = 1966;
         private static readonly byte[] CharacterModelMarker = { 0x81, 0x01, 0x00, 0x00 };
         private static readonly byte[] RoomLabelMarker = Encoding.Unicode.GetBytes("Quest ");
@@ -62,6 +63,7 @@ namespace QFG5Extractor.Resources.Save
         private int characterModelOffset = -1;
         private int characterPlacementOffset = -1;
         private int roomIdOffset = -1;
+        private bool roomHasData;
         private int flagArrayOffset = -1;
         private bool hasIncompleteCharacterRecord;
 
@@ -92,6 +94,11 @@ namespace QFG5Extractor.Resources.Save
         public string CharacterModelUnavailableReason { get; private set; }
         public string CharacterPlacementUnavailableReason { get; private set; }
         public string RoomUnavailableReason { get; private set; }
+        public string RoomEditUnavailableReason { get; private set; }
+        public bool CanEditRoomId
+        {
+            get { return IsLoaded && roomIdOffset >= 0 && roomHasData && !hasIncompleteCharacterRecord; }
+        }
 
         public byte GetByte(int index)
         {
@@ -155,10 +162,13 @@ namespace QFG5Extractor.Resources.Save
             byte[] candidate = ReadCandidate(fullPath);
             int candidateInventoryOffset = ValidateInventory(candidate);
             int candidateFlagArrayOffset = FindFlagArrayOffset(candidate, out string flagArrayError);
-            int candidateCharacterModelOffset = FindCharacterModelOffset(candidate, out string characterModelError);
+            int candidateRoomIdOffset = FindRoomIdOffset(candidate, candidateFlagArrayOffset,
+                out bool candidateRoomHasData, out string roomError);
+            bool candidateIsGlobalMap = candidateRoomIdOffset >= 0 && !candidateRoomHasData;
+            int candidateCharacterModelOffset = FindCharacterModelOffset(candidate,
+                candidateFlagArrayOffset, out string characterModelError);
             int candidateCharacterPlacementOffset = FindCharacterPlacementOffset(candidate,
                 candidateCharacterModelOffset, out string characterPlacementError);
-            int candidateRoomIdOffset = FindRoomIdOffset(candidate, out string roomError);
             bool candidateHasIncompleteCharacterRecord =
                 FindIncompleteRoomLabelOffset(candidate) >= 0;
 
@@ -170,10 +180,13 @@ namespace QFG5Extractor.Resources.Save
                 candidate = ReadCandidate(fullPath);
                 candidateInventoryOffset = ValidateInventory(candidate);
                 candidateFlagArrayOffset = FindFlagArrayOffset(candidate, out flagArrayError);
-                candidateCharacterModelOffset = FindCharacterModelOffset(candidate, out characterModelError);
+                candidateRoomIdOffset = FindRoomIdOffset(candidate, candidateFlagArrayOffset,
+                    out candidateRoomHasData, out roomError);
+                candidateIsGlobalMap = candidateRoomIdOffset >= 0 && !candidateRoomHasData;
+                candidateCharacterModelOffset = FindCharacterModelOffset(candidate,
+                    candidateFlagArrayOffset, out characterModelError);
                 candidateCharacterPlacementOffset = FindCharacterPlacementOffset(candidate,
                     candidateCharacterModelOffset, out characterPlacementError);
-                candidateRoomIdOffset = FindRoomIdOffset(candidate, out roomError);
                 candidateHasIncompleteCharacterRecord =
                     FindIncompleteRoomLabelOffset(candidate) >= 0;
             }
@@ -191,7 +204,11 @@ namespace QFG5Extractor.Resources.Save
             characterPlacementOffset = candidateCharacterPlacementOffset;
             CharacterPlacementUnavailableReason = characterPlacementError;
             roomIdOffset = candidateRoomIdOffset;
+            roomHasData = candidateRoomHasData;
             RoomUnavailableReason = roomError;
+            RoomEditUnavailableReason = candidateIsGlobalMap
+                ? "This save is on the global map; it has no room-data block to safely edit."
+                : null;
             hasIncompleteCharacterRecord = candidateHasIncompleteCharacterRecord;
             CharacterDataUnavailableReason = hasIncompleteCharacterRecord
                 ? "The save appears truncated: its character room label stops at 'Qu'. Character fields are read-only; restore the backup or re-save in game."
@@ -309,6 +326,12 @@ namespace QFG5Extractor.Resources.Save
                 return false;
 
             int value = ReadInt32(saveData, roomIdOffset);
+            if (value == 0 && !roomHasData)
+            {
+                roomId = value;
+                return true;
+            }
+
             RoomLocationInfo location;
             if (value < 0 || value > ushort.MaxValue ||
                 !RoomLocationCatalog.TryGet(value, out location))
@@ -325,6 +348,9 @@ namespace QFG5Extractor.Resources.Save
                 throw new ArgumentOutOfRangeException("roomId", "Room IDs must be between 0 and 65535.");
             if (hasIncompleteCharacterRecord)
                 throw new InvalidOperationException(CharacterDataUnavailableReason);
+            if (!roomHasData)
+                throw new InvalidOperationException(RoomEditUnavailableReason ??
+                    "The room record does not contain editable room data.");
             RoomLocationInfo location;
             if (!RoomLocationCatalog.TryGet(roomId, out location))
                 throw new ArgumentOutOfRangeException("roomId", "Choose a room ID from the supported room catalog.");
@@ -341,8 +367,14 @@ namespace QFG5Extractor.Resources.Save
             SetByte(roomIdOffset + 3, 0);
         }
 
-        private static int FindCharacterModelOffset(byte[] candidate, out string error)
+        private static int FindCharacterModelOffset(byte[] candidate, int engineStateOffset,
+            out string error)
         {
+            int engineRelativeModelOffset = engineStateOffset + EngineStateLength +
+                CharacterModelOffsetAfterEngineState;
+            bool engineRelativeRecordValid = engineStateOffset >= 0 &&
+                IsSupportedCharacterModelRecord(candidate, engineRelativeModelOffset);
+
             int markerOffset = -1;
             for (int i = 0; i <= candidate.Length - CharacterModelMarker.Length; i++)
             {
@@ -380,6 +412,23 @@ namespace QFG5Extractor.Resources.Save
                 bool roomRelativeRecordValid =
                     IsSupportedCharacterModelRecord(candidate, roomRelativeModelOffset);
 
+                if (engineRelativeRecordValid)
+                {
+                    if (engineRelativeModelOffset != roomRelativeModelOffset &&
+                        roomRelativeRecordValid)
+                    {
+                        error = "The engine-relative and room-relative character records point to different fields. Editing is disabled.";
+                        return -1;
+                    }
+
+                    if (engineRelativeModelOffset == roomRelativeModelOffset ||
+                        !roomRelativeRecordValid)
+                    {
+                        error = null;
+                        return engineRelativeModelOffset;
+                    }
+                }
+
                 if (markerRecordValid)
                 {
                     if (markedModelOffset != roomRelativeModelOffset && roomRelativeRecordValid)
@@ -403,6 +452,12 @@ namespace QFG5Extractor.Resources.Save
 
                 error = "The character model field near the room record could not be validated safely.";
                 return -1;
+            }
+
+            if (engineRelativeRecordValid)
+            {
+                error = null;
+                return engineRelativeModelOffset;
             }
 
             if (markerRecordValid)
@@ -441,7 +496,8 @@ namespace QFG5Extractor.Resources.Save
                 IsFinite(rotation) && IsFinite(size);
         }
 
-        private static int FindCharacterPlacementOffset(byte[] candidate, int modelOffset, out string error)
+        private static int FindCharacterPlacementOffset(byte[] candidate, int modelOffset,
+            out string error)
         {
             if (modelOffset < 0 || !HasRange(candidate, modelOffset, CharacterPlacementRecordLength))
             {
@@ -465,8 +521,19 @@ namespace QFG5Extractor.Resources.Save
             return modelOffset;
         }
 
-        private static int FindRoomIdOffset(byte[] candidate, out string error)
+        private static int FindRoomIdOffset(byte[] candidate, int engineStateOffset,
+            out bool hasRoomData, out string error)
         {
+            hasRoomData = false;
+            int structuredRoomOffset = FindRoomStateOffset(candidate, engineStateOffset,
+                out int structuredRoomId);
+            if (structuredRoomOffset >= 0)
+            {
+                error = null;
+                hasRoomData = structuredRoomId != 0 && structuredRoomId != 900;
+                return structuredRoomOffset;
+            }
+
             int labelOffset = FindUniqueRoomLabelOffset(candidate, out error);
             if (labelOffset < 0 && error == "A supported room record was not found in this save.")
                 labelOffset = FindIncompleteRoomLabelOffset(candidate);
@@ -498,33 +565,86 @@ namespace QFG5Extractor.Resources.Save
             }
 
             error = null;
+            hasRoomData = true;
             return fieldOffset;
+        }
+
+        private static int FindRoomStateOffset(byte[] candidate, int engineStateOffset,
+            out int roomId)
+        {
+            roomId = -1;
+            if (!HasRange(candidate, engineStateOffset, EngineStateLength))
+                return -1;
+
+            int offset = engineStateOffset + EngineStateLength;
+            if (!HasRange(candidate, offset, 4))
+                return -1;
+
+            int genericObjectSize = ReadInt32(candidate, offset);
+            if (genericObjectSize < 0 || genericObjectSize > candidate.Length - offset - 4)
+                return -1;
+            offset += 4 + genericObjectSize;
+
+            if (!HasRange(candidate, offset, CharacterEquipmentLength + 4))
+                return -1;
+            offset += CharacterEquipmentLength;
+
+            int mapStateSize = ReadInt32(candidate, offset);
+            if (mapStateSize < 0 || mapStateSize > candidate.Length - offset - 4)
+                return -1;
+            int roomIdOffset = offset + 4 + mapStateSize;
+            if (!HasRange(candidate, roomIdOffset, 4))
+                return -1;
+
+            int candidateRoomId = ReadInt32(candidate, roomIdOffset);
+            bool isTerminalMapRecord = candidateRoomId == 900 &&
+                roomIdOffset + 4 == candidate.Length;
+            bool isPaddedRoomRecord = HasRange(candidate, roomIdOffset, 8) &&
+                candidate[roomIdOffset + 4] == 0 &&
+                candidate[roomIdOffset + 5] == 0 &&
+                candidate[roomIdOffset + 6] == 0 &&
+                candidate[roomIdOffset + 7] == 0;
+            bool supportedRoomId = candidateRoomId == 0 || candidateRoomId == 900 ||
+                RoomLocationCatalog.TryGet(candidateRoomId, out RoomLocationInfo location);
+            if (!supportedRoomId || (!isTerminalMapRecord && !isPaddedRoomRecord))
+                return -1;
+
+            roomId = candidateRoomId;
+            return roomIdOffset;
         }
 
         private static int FindIncompleteRoomLabelOffset(byte[] candidate)
         {
-            byte[] partialLabel = { (byte)'Q', 0, (byte)'u', 0 };
-            int labelOffset = candidate.Length - partialLabel.Length;
-            if (!HasBytes(candidate, labelOffset, partialLabel))
-                return -1;
+            for (int prefixLength = 2; prefixLength < RoomLabelMarker.Length; prefixLength += 2)
+            {
+                int labelOffset = candidate.Length - prefixLength;
+                bool matchesPrefix = labelOffset >= 0;
+                for (int i = 0; matchesPrefix && i < prefixLength; i++)
+                {
+                    if (candidate[labelOffset + i] != RoomLabelMarker[i])
+                        matchesPrefix = false;
+                }
+                if (!matchesPrefix)
+                    continue;
 
-            int roomFieldOffset = labelOffset - 8;
-            if (!HasRange(candidate, roomFieldOffset, 8) ||
-                candidate[roomFieldOffset + 4] != 0 ||
-                candidate[roomFieldOffset + 5] != 0 ||
-                candidate[roomFieldOffset + 6] != 0 ||
-                candidate[roomFieldOffset + 7] != 0)
-                return -1;
+                int roomFieldOffset = labelOffset - 8;
+                if (!HasRange(candidate, roomFieldOffset, 8) ||
+                    candidate[roomFieldOffset + 4] != 0 ||
+                    candidate[roomFieldOffset + 5] != 0 ||
+                    candidate[roomFieldOffset + 6] != 0 ||
+                    candidate[roomFieldOffset + 7] != 0)
+                    continue;
 
-            int roomId = ReadInt32(candidate, roomFieldOffset);
-            RoomLocationInfo location;
-            if (!RoomLocationCatalog.TryGet(roomId, out location))
-                return -1;
+                int roomId = ReadInt32(candidate, roomFieldOffset);
+                if (!RoomLocationCatalog.TryGet(roomId, out RoomLocationInfo location))
+                    continue;
 
-            int modelOffset = labelOffset - CharacterModelOffsetBeforeRoomLabel;
-            return IsSupportedCharacterModelRecord(candidate, modelOffset)
-                ? labelOffset
-                : -1;
+                int modelOffset = labelOffset - CharacterModelOffsetBeforeRoomLabel;
+                if (IsSupportedCharacterModelRecord(candidate, modelOffset))
+                    return labelOffset;
+            }
+
+            return -1;
         }
 
         private static int FindUniqueRoomLabelOffset(byte[] candidate, out string error)
@@ -574,13 +694,10 @@ namespace QFG5Extractor.Resources.Save
                 throw new InvalidDataException("The selected save contains an invalid header noise length.");
 
             int inventoryCount = ReadInventoryCount(candidate);
-            if (inventoryCount > InventorySlotCount)
-                throw new InvalidDataException("The save declares more inventory items than the editor can safely handle.");
-
             int inventoryOffset = SaveHeaderLength + PlayerTypeLength + noiseLength + PlayerStateLength;
-            int inventoryLength = InventorySlotSize * InventorySlotCount;
-            if (inventoryOffset < 0 || inventoryOffset > candidate.Length - inventoryLength)
-                throw new InvalidDataException("The selected save does not contain a complete inventory slot range at the documented location.");
+            long inventoryLength = (long)InventorySlotSize * inventoryCount;
+            if (inventoryOffset < 0 || inventoryLength > candidate.Length - inventoryOffset)
+                throw new InvalidDataException("The selected save does not contain all header-declared inventory slots at the documented location.");
             return inventoryOffset;
         }
 
@@ -761,31 +878,16 @@ namespace QFG5Extractor.Resources.Save
                 return false;
 
             int slotIndex = relativeOffset / InventorySlotSize;
-            return InventoryCount <= InventorySlotCount &&
-                slotIndex < InventoryCount &&
+            return slotIndex < InventoryCount &&
                 HasRange(offset, InventorySlotSize);
         }
 
         public bool HasInventoryRange(int offset, int slotCount)
         {
             EnsureLoaded();
-            if (slotCount < 0 || slotCount > InventorySlotCount) return false;
+            if (slotCount < 0 || slotCount > InventoryCount) return false;
             int rangeLength = slotCount * InventorySlotSize;
             return offset == InventoryOffset && HasRange(offset, rangeLength);
-        }
-
-        public void AdjustInventoryCount(int change)
-        {
-            EnsureLoaded();
-            int updatedCount = InventoryCount + change;
-            if ((change != -1 && change != 1) ||
-                updatedCount < 0 || updatedCount > InventorySlotCount)
-                throw new InvalidDataException("The inventory count cannot be changed safely.");
-
-            int encodedCount = updatedCount ^ 0xBEAD;
-            SetByte(12, (byte)(encodedCount & 0xFF));
-            SetByte(13, (byte)((encodedCount >> 8) & 0xFF));
-            InventoryCount = updatedCount;
         }
 
         private bool HasRange(int index, int count)

@@ -2,13 +2,15 @@ using QFG5Extractor.Core;
 using System;
 using System.Drawing;
 using System.IO;
+using System.Reflection;
 using System.Windows.Forms;
 
 namespace QFG5Extractor.Core.UI
 {
     public static class QFG5Theme
     {
-        public static string UIKitPath = @"C:\Program Files\QFG5-RE\QFG5Extractor\UI Kit";
+        private const string EmbeddedUIKitResourcePrefix = "QFG5Extractor.";
+        public static string UIKitPath;
         
         public static Image ButtonIdle;
         public static Image ButtonPressed;
@@ -18,6 +20,16 @@ namespace QFG5Extractor.Core.UI
         public static Image PreviewBox;
         public static Image GameLogo;
         public static Image ToolkitLogo;
+
+        public static string GetUIKitAssetPath(string relativePath)
+        {
+            string path = Path.Combine(UIKitPath, relativePath);
+            if (File.Exists(path))
+                return path;
+
+            string flattenedPath = Path.Combine(UIKitPath, Path.GetFileName(relativePath));
+            return File.Exists(flattenedPath) ? flattenedPath : path;
+        }
 
         #region Centralized Color Tokens (QFG5 Theme)
         public static readonly Color ColorBgDark = Color.FromArgb(20, 22, 18);
@@ -102,42 +114,29 @@ namespace QFG5Extractor.Core.UI
         static QFG5Theme() {
             var swTheme = System.Diagnostics.Stopwatch.StartNew();
             var swDiscovery = System.Diagnostics.Stopwatch.StartNew();
-            try {
-                string baseDir = AppDomain.CurrentDomain.BaseDirectory ?? string.Empty;
-                string localKit = Path.Combine(baseDir, "UI Kit");
-                string parentKit = Path.Combine(baseDir, "..", "UI Kit");
-                string cwdKit = Path.Combine(Environment.CurrentDirectory, "UI Kit");
+            string baseDir = AppDomain.CurrentDomain.BaseDirectory ?? string.Empty;
+            string localKit = Path.Combine(baseDir, "UI Kit");
+            string parentKit = Path.Combine(baseDir, "..", "UI Kit");
+            string cwdKit = Path.Combine(Environment.CurrentDirectory, "UI Kit");
 
-                // Priority 1: Next to executable (Standard release / zip distribution)
-                if (Directory.Exists(localKit)) {
-                    UIKitPath = localKit;
-                }
-                // Priority 2: In current working directory
-                else if (Directory.Exists(cwdKit)) {
-                    UIKitPath = cwdKit;
-                }
-                // Priority 3: In parent directory
-                else if (Directory.Exists(parentKit)) {
-                    UIKitPath = parentKit;
-                }
-                else {
-                    // Priority 4: Development path (3 levels up from bin/Debug or bin/Release)
-                    string devKit = null;
-                    try {
-                        DirectoryInfo dir = new DirectoryInfo(baseDir);
-                        if (dir.Parent != null && dir.Parent.Parent != null && dir.Parent.Parent.Parent != null) {
-                            devKit = Path.Combine(dir.Parent.Parent.Parent.FullName, "UI Kit");
-                        }
-                    } catch { }
+            if (Directory.Exists(localKit)) {
+                UIKitPath = localKit;
+            }
+            else if (Directory.Exists(cwdKit)) {
+                UIKitPath = cwdKit;
+            }
+            else if (Directory.Exists(parentKit)) {
+                UIKitPath = parentKit;
+            }
+            else {
+                DirectoryInfo dir = new DirectoryInfo(baseDir);
+                string devKit = dir.Parent != null && dir.Parent.Parent != null && dir.Parent.Parent.Parent != null
+                    ? Path.Combine(dir.Parent.Parent.Parent.FullName, "UI Kit")
+                    : null;
 
-                    if (!string.IsNullOrEmpty(devKit) && Directory.Exists(devKit)) {
-                        UIKitPath = devKit;
-                    } else {
-                        UIKitPath = localKit;
-                    }
-                }
-            } catch (Exception ex) {
-                Logger.Log("UI Theme Init error: " + ex.Message);
+                UIKitPath = !string.IsNullOrEmpty(devKit) && Directory.Exists(devKit)
+                    ? devKit
+                    : ExtractEmbeddedUIKit();
             }
             swDiscovery.Stop();
             Logger.LogPerf($"QFG5Theme path discovery: {swDiscovery.ElapsedMilliseconds} ms (kit path: {UIKitPath})");
@@ -155,6 +154,77 @@ namespace QFG5Extractor.Core.UI
             swTheme.Stop();
             Logger.LogStartup($"QFG5Theme initialization: {swTheme.ElapsedMilliseconds} ms");
             Logger.LogResource($"Memory after Theme: {Logger.GetMemorySnapshot()}");
+        }
+
+        private static string ExtractEmbeddedUIKit()
+        {
+            string localAppData = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
+            if (string.IsNullOrEmpty(localAppData))
+                throw new InvalidOperationException("The per-user application data folder is unavailable.");
+
+            Assembly assembly = Assembly.GetExecutingAssembly();
+            string[] resourceNames = assembly.GetManifestResourceNames();
+            string versionFolder = assembly.ManifestModule.ModuleVersionId.ToString("N");
+            string targetRoot = Path.Combine(localAppData, "QFG5Extractor", "UI Kit", versionFolder);
+            string completeMarker = Path.Combine(targetRoot, ".complete");
+
+            bool hasEmbeddedImages = false;
+            foreach (string resourceName in resourceNames)
+            {
+                if (IsEmbeddedUIKitImage(resourceName))
+                {
+                    hasEmbeddedImages = true;
+                    break;
+                }
+            }
+
+            if (!hasEmbeddedImages)
+                throw new InvalidOperationException("This build does not contain the embedded UI Kit images.");
+
+            if (File.Exists(completeMarker))
+                return targetRoot;
+
+            Directory.CreateDirectory(targetRoot);
+            string canonicalRoot = Path.GetFullPath(targetRoot).TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar;
+
+            foreach (string resourceName in resourceNames)
+            {
+                if (!IsEmbeddedUIKitImage(resourceName))
+                    continue;
+
+                string relativePath = resourceName.Substring(EmbeddedUIKitResourcePrefix.Length)
+                    .Replace('/', Path.DirectorySeparatorChar)
+                    .Replace('\\', Path.DirectorySeparatorChar);
+                string destinationPath = Path.GetFullPath(Path.Combine(targetRoot, relativePath));
+                if (!destinationPath.StartsWith(canonicalRoot, StringComparison.Ordinal))
+                    throw new InvalidDataException("An embedded UI Kit image has an invalid resource path.");
+
+                string destinationDirectory = Path.GetDirectoryName(destinationPath);
+                if (!string.IsNullOrEmpty(destinationDirectory))
+                    Directory.CreateDirectory(destinationDirectory);
+
+                using (Stream source = assembly.GetManifestResourceStream(resourceName))
+                {
+                    if (source == null)
+                        throw new InvalidDataException("An embedded UI Kit image could not be opened: " + resourceName);
+
+                    using (FileStream destination = new FileStream(destinationPath, FileMode.Create, FileAccess.Write, FileShare.None))
+                        source.CopyTo(destination);
+                }
+            }
+
+            File.WriteAllText(completeMarker, versionFolder);
+            return targetRoot;
+        }
+
+        private static bool IsEmbeddedUIKitImage(string resourceName)
+        {
+            if (!resourceName.StartsWith(EmbeddedUIKitResourcePrefix, StringComparison.Ordinal))
+                return false;
+
+            string extension = Path.GetExtension(resourceName);
+            return string.Equals(extension, ".png", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(extension, ".jpg", StringComparison.OrdinalIgnoreCase);
         }
 
         private static Image LoadImage(string filename) {

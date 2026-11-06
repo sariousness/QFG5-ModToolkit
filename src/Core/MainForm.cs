@@ -7,6 +7,7 @@ using QFG5Extractor.Resources.Panorama;
 using QFG5Extractor.Core;
 using QFG5Extractor.Core.UI;
 using QFG5Extractor.Resources.Gra;
+using QFG5Extractor.Resources.Audio;
 using System;
 using System.Drawing;
 using System.Windows.Forms;
@@ -107,7 +108,7 @@ namespace QFG5Extractor.Core
             this.Controls.Add(logoBar);
 
             // Visible tabs only (Map Icons excluded from strip)
-            UserControl[] pages = new UserControl[10];
+            UserControl[] pages = new UserControl[12];
             SaveSession saveSession = new SaveSession();
             SaveTab saveTab = null;
             FlagsTab flagsTab = null;
@@ -181,6 +182,18 @@ namespace QFG5Extractor.Core
             swTab.Stop();
             Logger.LogStartup($"Tab RoomStudioTab: END {swTab.ElapsedMilliseconds} ms");
 
+            Logger.LogStartup("Tab AnmRetargetTab: START");
+            swTab.Restart();
+            pages[10] = new AnmRetargetTab();
+            swTab.Stop();
+            Logger.LogStartup($"Tab AnmRetargetTab: END {swTab.ElapsedMilliseconds} ms");
+
+            Logger.LogStartup("Tab AudioTab: START");
+            swTab.Restart();
+            pages[11] = new AudioTab();
+            swTab.Stop();
+            Logger.LogStartup($"Tab AudioTab: END {swTab.ElapsedMilliseconds} ms");
+
             // Control & Memory snapshot after tabs
             int totalTabCtrls = 0, pbTabCtrls = 0, pnlTabCtrls = 0, btnTabCtrls = 0, dgvTabCtrls = 0;
             foreach (var tab in pages) Logger.CountControls(tab, ref totalTabCtrls, ref pbTabCtrls, ref pnlTabCtrls, ref btnTabCtrls, ref dgvTabCtrls);
@@ -188,20 +201,20 @@ namespace QFG5Extractor.Core
             Logger.LogResource($"Memory after Tabs: {Logger.GetMemorySnapshot()}");
 
             string[] pageNames = new string[] {
-                "SPK Archive", "MDL Model", "Pano Editor", "Message", "GRA Sprite",
-                "3D Viewer", "Texture Edit", "Save Editor", "Settings",
-                "Rooms / Studio"
+                "SPK Archive", "Model Extractor MDL", "Pano Extractor IMG/NOD", "Messages (Demo)", "Sprites Extractor GRA",
+                "3D Viewer", "Painter", "Save Editor", "Settings",
+                "Scenes (Demo)", "ANM Lab (Experimental)", "Audio Explorer"
             };
             string[] navigationNames = new string[] {
-                "SPK Archive", "MDL Model", "Pano Editor", "Message (Beta)", "GRA Sprite",
-                "3D Viewer", "Texture Edit (Beta)", "Save Editor", "Settings",
-                "Rooms / Studio"
+                "SPK Archive", "Model Extractor MDL", "Pano Extractor IMG/NOD", "Messages (Demo)", "Sprites Extractor GRA",
+                "3D Viewer", "Painter", "Save Editor", "Settings",
+                "Scenes (Demo)", "ANM Lab (Experimental)", "Audio Explorer"
             };
 
             string[] iconFiles = new string[] {
                 "spk_900002_f001.png", "mdl_900003_f001.png", "pano_900017_f001.png", "message_900004_f001.png",
                 "gra_900001_f001.png", "model_900007_f001.png", "texedit_900005.png", "save_900016_f001.png",
-                "settings_900014_f001.png", "pano_900017_f001.png"
+                "settings_900014_f001.png", "pano_900017_f001.png", "model_900007_f001.png", "message_900004_f001.png"
             };
 
             QFG5TableLayoutPanel tabHeaders = new QFG5TableLayoutPanel {
@@ -257,6 +270,8 @@ namespace QFG5Extractor.Core
                     ((PanoTab)pages[2]).AutoLoad();
                     ((RoomStudioTab)pages[index]).AutoLoad();
                 }
+                else if (index == 11)
+                    ((AudioTab)pages[index]).AutoLoad();
             };
 
             bool navigationCollapsed = false;
@@ -316,7 +331,7 @@ namespace QFG5Extractor.Core
                 };
                 tabButtons.Add(btnTab);
 
-                string iconPath = Path.Combine(QFG5Theme.UIKitPath, "Menu Graphics" + Path.DirectorySeparatorChar + iconFiles[i]);
+                string iconPath = QFG5Theme.GetUIKitAssetPath(Path.Combine("Menu Graphics", iconFiles[i]));
                 if (File.Exists(iconPath)) {
                     btnTab.Image = Image.FromFile(iconPath);
                     iconsLoaded++;

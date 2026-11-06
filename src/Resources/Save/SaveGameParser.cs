@@ -10,8 +10,6 @@ namespace QFG5Extractor.Resources.Save
         private readonly SaveSession session;
 
         public const int INVENTORY_SLOT_SIZE = 16;
-        public const int INVENTORY_POOL_SIZE = 120;
-        public const int MAX_SLOTS = 250;
 
         public Dictionary<string, string> ObjectNames { get; private set; }
 
@@ -55,7 +53,7 @@ namespace QFG5Extractor.Resources.Save
             var items = new List<InventoryItem>();
             if (!session.IsLoaded) return items;
             int detectedOffset = session.InventoryOffset;
-            if (!session.HasInventoryRange(detectedOffset, INVENTORY_POOL_SIZE))
+            if (!session.HasInventoryRange(detectedOffset, session.InventoryCount))
                 throw new InvalidDataException("The active save does not contain a complete inventory slot range.");
 
             string[] placeNames = new string[] {
@@ -66,11 +64,9 @@ namespace QFG5Extractor.Resources.Save
                 "Front Minos Chest"
             };
 
-            // The main pool seems to be 120 slots
-            for (int i = 0; i < INVENTORY_POOL_SIZE; i++)
+            for (int i = 0; i < session.InventoryCount; i++)
             {
                 int offset = detectedOffset + (i * INVENTORY_SLOT_SIZE);
-                if (offset + 16 > session.Length) break;
 
                 string idHex = session.GetByte(offset).ToString("X2") + session.GetByte(offset + 1).ToString("X2");
                 int amount = session.GetByte(offset + 4) | (session.GetByte(offset + 5) << 8) | (session.GetByte(offset + 6) << 16) | (session.GetByte(offset + 7) << 24);
@@ -124,9 +120,7 @@ namespace QFG5Extractor.Resources.Save
 
         public void UpdateInventoryItem(int offset, string newIdHex, int newAmount)
         {
-            if (!session.HasInventoryRange(session.InventoryOffset, INVENTORY_POOL_SIZE) ||
-                offset < session.InventoryOffset ||
-                offset - session.InventoryOffset > INVENTORY_POOL_SIZE * INVENTORY_SLOT_SIZE - 8)
+            if (!session.IsActiveInventorySlot(offset))
                 return;
 
             if (newIdHex.Length == 4)
@@ -151,61 +145,20 @@ namespace QFG5Extractor.Resources.Save
 
         public void InsertInventoryItem(int index)
         {
-            int detectedOffset = MakeRoomForInventoryItem(index);
-            int currentResId = session.GetByte(detectedOffset + index * INVENTORY_SLOT_SIZE + 8);
-            int targetOffset = detectedOffset + (index + 1) * INVENTORY_SLOT_SIZE;
-            session.CopyWithin(detectedOffset + index * INVENTORY_SLOT_SIZE, targetOffset, INVENTORY_SLOT_SIZE);
-            session.SetByte(targetOffset + 8, (byte)currentResId);
-            session.AdjustInventoryCount(1);
+            throw new InvalidOperationException(
+                "Adding inventory slots is not supported because it would shift the save's following data.");
         }
 
         public void InsertEmptyInventoryItem(int index)
         {
-            int detectedOffset = MakeRoomForInventoryItem(index);
-            int reservoirId = session.GetByte(detectedOffset + index * INVENTORY_SLOT_SIZE + 8);
-            int targetOffset = detectedOffset + (index + 1) * INVENTORY_SLOT_SIZE;
-            session.Clear(targetOffset, INVENTORY_SLOT_SIZE);
-            session.SetByte(targetOffset + 8, (byte)reservoirId);
-            session.AdjustInventoryCount(1);
-        }
-
-        private int MakeRoomForInventoryItem(int index)
-        {
-            int detectedOffset = session.InventoryOffset;
-            if (index < 0 || index >= session.InventoryCount ||
-                session.InventoryCount >= INVENTORY_POOL_SIZE ||
-                !session.HasInventoryRange(detectedOffset, INVENTORY_POOL_SIZE))
-                throw new InvalidDataException("The selected inventory range cannot safely accommodate an inserted slot.");
-
-            for (int i = INVENTORY_POOL_SIZE - 1; i > index + 1; i--)
-            {
-                int sourceOffset = detectedOffset + (i - 1) * INVENTORY_SLOT_SIZE;
-                int targetOffset = detectedOffset + i * INVENTORY_SLOT_SIZE;
-                session.CopyWithin(sourceOffset, targetOffset, INVENTORY_SLOT_SIZE);
-            }
-            return detectedOffset;
+            throw new InvalidOperationException(
+                "Adding inventory slots is not supported because it would shift the save's following data.");
         }
 
         public void DeleteInventoryItem(int index)
         {
-            int POOL_SIZE = INVENTORY_POOL_SIZE;
-            int detectedOffset = session.InventoryOffset;
-            if (index < 0 || index >= session.InventoryCount ||
-                !session.HasInventoryRange(detectedOffset, POOL_SIZE))
-                throw new InvalidDataException("The selected inventory range cannot safely accommodate a deleted slot.");
-
-            // Shift items UP from index+1
-            for (int i = index; i < POOL_SIZE - 1; i++)
-            {
-                int src = detectedOffset + (i + 1) * INVENTORY_SLOT_SIZE;
-                int dst = detectedOffset + i * INVENTORY_SLOT_SIZE;
-                session.CopyWithin(src, dst, INVENTORY_SLOT_SIZE);
-            }
-
-            // Zero out the last slot
-            int lastOffset = detectedOffset + (POOL_SIZE - 1) * INVENTORY_SLOT_SIZE;
-            session.Clear(lastOffset, INVENTORY_SLOT_SIZE);
-            session.AdjustInventoryCount(-1);
+            throw new InvalidOperationException(
+                "Removing inventory slots is not supported because it would shift the save's following data.");
         }
     }
 }

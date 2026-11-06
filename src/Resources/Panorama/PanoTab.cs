@@ -215,7 +215,7 @@ namespace QFG5Extractor.Resources.Panorama
             editButton = new QFG5Button { Text = "Edit Selected", Dock = DockStyle.Fill, Height = 30, Margin = new Padding(0, 1, 4, 1), TabIndex = 7 };
             editButton.Enabled = false;
             editButton.Click += EditSelectedButtonClick;
-            toolTip.SetToolTip(editButton, "Open the selected panorama bitmap in the Texture Editor.");
+            toolTip.SetToolTip(editButton, "Open the selected panorama bitmap in Painter.");
 
             runButton = new QFG5Button { Text = "Extract", Dock = DockStyle.Fill, Height = 30, Margin = new Padding(2, 1, 0, 1), TabIndex = 8 };
             runButton.Click += RunButtonClick;
@@ -300,8 +300,7 @@ namespace QFG5Extractor.Resources.Panorama
 
             try
             {
-                string[] allNodFiles = Directory.GetFiles(nodFolder, "*.nod");
-                if (allNodFiles.Length == 0) allNodFiles = Directory.GetFiles(nodFolder, "*.NOD");
+                string[] allNodFiles = GetFilesByExtension(nodFolder, ".nod");
 
                 if (allNodFiles.Length == 0)
                 {
@@ -398,9 +397,20 @@ namespace QFG5Extractor.Resources.Panorama
 
         private bool DirectoryHasFiles(string folder, string extension)
         {
-            return Directory.Exists(folder) &&
-                Array.Exists(Directory.GetFiles(folder), file =>
-                    string.Equals(Path.GetExtension(file), extension, StringComparison.OrdinalIgnoreCase));
+            return GetFilesByExtension(folder, extension).Length > 0;
+        }
+
+        private string[] GetFilesByExtension(string folder, string extension)
+        {
+            if (!Directory.Exists(folder)) return new string[0];
+
+            List<string> matchingFiles = new List<string>();
+            foreach (string file in Directory.GetFiles(folder))
+            {
+                if (string.Equals(Path.GetExtension(file), extension, StringComparison.OrdinalIgnoreCase))
+                    matchingFiles.Add(file);
+            }
+            return matchingFiles.ToArray();
         }
 
         private void LoadOutputFiles(string folder)

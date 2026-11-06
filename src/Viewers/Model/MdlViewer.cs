@@ -91,6 +91,7 @@ namespace QFG5Extractor.Viewers.Model
         private bool animHalfSpeed = false;
         private int animTickAccumulator = 0;
         private Label lblAnimFrame;
+        private Label lblAnimationCompatibility;
         private QFG5Button btnPlayAnim;
         private QFG5Button btnAnimHalfSpeed;
         private ModelDatabase _db;
@@ -215,7 +216,7 @@ namespace QFG5Extractor.Viewers.Model
             };
             sidebarLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100f));
             sidebarLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 100f));
-            sidebarLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 132));
+            sidebarLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 156));
             sidebarLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 112));
             sidebarLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 68));
 
@@ -314,7 +315,7 @@ namespace QFG5Extractor.Viewers.Model
             {
                 Dock = DockStyle.Fill,
                 ColumnCount = 1,
-                RowCount = 3,
+                RowCount = 4,
                 BackColor = QFG5Theme.ColorSurface,
                 Padding = new Padding(6),
                 Margin = new Padding(2)
@@ -322,7 +323,8 @@ namespace QFG5Extractor.Viewers.Model
             QFG5Theme.ApplyHeaderStroke(animPanel);
             animPanel.RowStyles.Add(new RowStyle(SizeType.Absolute, 25));
             animPanel.RowStyles.Add(new RowStyle(SizeType.Absolute, 34));
-            animPanel.RowStyles.Add(new RowStyle(SizeType.Percent, 100f));
+            animPanel.RowStyles.Add(new RowStyle(SizeType.Absolute, 38));
+            animPanel.RowStyles.Add(new RowStyle(SizeType.Absolute, 36));
             animPanel.Controls.Add(new Label
             {
                 Text = "ANIMATION",
@@ -334,6 +336,17 @@ namespace QFG5Extractor.Viewers.Model
             cmbAnimations = new QFG5ComboBox { Dock = DockStyle.Fill, Margin = new Padding(0, 2, 0, 2) };
             cmbAnimations.ComboBox.SelectedIndexChanged += CmbAnimations_SelectedIndexChanged;
             animPanel.Controls.Add(cmbAnimations, 0, 1);
+            lblAnimationCompatibility = new Label
+            {
+                Text = "Warning: matching bone counts do not guarantee compatibility. Renamed or cross-model ANMs can scatter meshes.",
+                Dock = DockStyle.Fill,
+                ForeColor = QFG5Theme.ColorGold,
+                Font = QFG5Theme.BodyFont,
+                TextAlign = ContentAlignment.MiddleLeft,
+                AutoEllipsis = true
+            };
+            lblAnimationCompatibility.AccessibleName = "Animation compatibility warning";
+            animPanel.Controls.Add(lblAnimationCompatibility, 0, 2);
 
             TableLayoutPanel animPlayRow = new TableLayoutPanel
             {
@@ -365,7 +378,7 @@ namespace QFG5Extractor.Viewers.Model
             animPlayRow.Controls.Add(btnPlayAnim, 0, 0);
             animPlayRow.Controls.Add(btnAnimHalfSpeed, 1, 0);
             animPlayRow.Controls.Add(lblAnimFrame, 2, 0);
-            animPanel.Controls.Add(animPlayRow, 0, 2);
+            animPanel.Controls.Add(animPlayRow, 0, 3);
 
             TableLayoutPanel texPanel = new TableLayoutPanel
             {
@@ -838,7 +851,8 @@ namespace QFG5Extractor.Viewers.Model
                     {
                         files = Directory.GetFiles(folderPath, "*.MDL");
                     }
-                    
+
+                    Array.Sort(files, StringComparer.OrdinalIgnoreCase);
                     foreach (var f in files)
                     {
                         string fileName = Path.GetFileName(f);
@@ -1125,11 +1139,14 @@ namespace QFG5Extractor.Viewers.Model
             int p;
             if (!int.TryParse(prefix, out p)) return; // If it's not a numbered model, skip
 
-            string[] foundAnms = Directory.GetFiles(txtANMFolder.Text, prefix + "*.anm");
-            if (foundAnms.Length == 0)
+            List<string> foundAnms = new List<string>();
+            foreach (string path in Directory.GetFiles(txtANMFolder.Text, prefix + "*"))
             {
-                foundAnms = Directory.GetFiles(txtANMFolder.Text, prefix + "*.ANM");
+                if (string.Equals(Path.GetExtension(path), ".anm", StringComparison.OrdinalIgnoreCase))
+                    foundAnms.Add(path);
             }
+            foundAnms.Sort((left, right) =>
+                StringComparer.OrdinalIgnoreCase.Compare(Path.GetFileName(left), Path.GetFileName(right)));
 
             availableAnimations.Clear();
             cmbAnimations.ComboBox.Items.Clear();
@@ -1138,7 +1155,21 @@ namespace QFG5Extractor.Viewers.Model
             foreach(var anm in foundAnms)
             {
                 // Optionally we could validate bone count here, but for speed we'll assume matching prefix is ok
-                string name = Path.GetFileName(anm);
+                string fileName = Path.GetFileName(anm);
+                string animationName;
+                try
+                {
+                    animationName = AnmAnimationLoader.ReadAnimationName(anm);
+                }
+                catch (Exception ex)
+                {
+                    Logger.LogError("MdlViewerTab", "Could not read animation name from " +
+                        fileName + ": " + ex.Message);
+                    animationName = string.Empty;
+                }
+                string name = string.IsNullOrEmpty(animationName)
+                    ? fileName
+                    : fileName + " - [" + animationName + "]";
                 availableAnimations.Add(anm);
                 cmbAnimations.ComboBox.Items.Add(name);
             }
@@ -1993,9 +2024,13 @@ namespace QFG5Extractor.Viewers.Model
                 return;
             }
  
-            string anmName = cmbAnimations.ComboBox.SelectedItem.ToString();
-            string path = Path.Combine(txtANMFolder.Text, anmName);
-            ApplyAnimation(path);
+            int animationIndex = cmbAnimations.ComboBox.SelectedIndex - 1;
+            if (animationIndex < 0 || animationIndex >= availableAnimations.Count)
+            {
+                Logger.LogError("MdlViewerTab", "Selected ANM entry does not correspond to an available animation.");
+                return;
+            }
+            ApplyAnimation(availableAnimations[animationIndex]);
         }
 
         private void BtnPlayAnim_Click(object sender, EventArgs e)

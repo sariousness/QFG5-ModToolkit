@@ -21,6 +21,13 @@ namespace QFG5Extractor.Resources.Save
         private readonly GLControl glControl;
         private readonly Label statusLabel;
         private readonly Timer spinTimer;
+        private readonly Label titleLabel;
+        private readonly QFG5Button playButton;
+        private readonly QFG5Button spinButton;
+        private readonly QFG5Button zoomOutButton;
+        private readonly QFG5Button zoomInButton;
+        private readonly ToolTip previewToolTip;
+        private readonly string previewTitle;
         private readonly OldMdlViewerLogic viewerLogic = new OldMdlViewerLogic();
         private List<MeshData> meshes = new List<MeshData>();
         private Matrix4[][] animationFrames = new Matrix4[0][];
@@ -29,7 +36,15 @@ namespace QFG5Extractor.Resources.Save
         private QFG5Extractor.Resources.Model.Vector3 meshCenter;
         private float meshScale = 1.0f;
         private float rotation;
+        private float dragRotationX;
+        private float zoom = 1.0f;
+        private Point lastDragPosition;
         private int animationFrame;
+        private int animationTickAccumulator;
+        private int highlightedTrackIndex = -1;
+        private bool animationPlaying;
+        private bool spinning;
+        private bool dragging;
         private bool glInitialized;
         private bool hasModel;
         private bool disposed;
@@ -37,29 +52,71 @@ namespace QFG5Extractor.Resources.Save
         private string statusMessage = "Choose a character model to preview.";
 
         public CharacterModelPreviewControl()
+            : this("MODEL PREVIEW", false)
+        {
+        }
+
+        public CharacterModelPreviewControl(string title, bool showPlaybackButton)
         {
             BackColor = QFG5Theme.ColorSurface;
+            previewTitle = title;
+            spinning = !showPlaybackButton;
+            previewToolTip = new ToolTip();
 
             TableLayoutPanel layout = new TableLayoutPanel {
                 Dock = DockStyle.Fill,
                 ColumnCount = 1,
-                RowCount = 2,
+                RowCount = showPlaybackButton ? 3 : 2,
                 BackColor = QFG5Theme.ColorSurface,
                 Padding = new Padding(6),
                 Margin = new Padding(0)
             };
             layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-            layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 26));
+            layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 24));
+            if (showPlaybackButton)
+                layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 30));
             layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
 
-            Label titleLabel = new Label {
-                Text = "MODEL PREVIEW",
+            titleLabel = new Label {
+                Text = title,
                 Dock = DockStyle.Fill,
                 ForeColor = QFG5Theme.ColorTextGold,
                 Font = QFG5Theme.SectionHeaderFont,
                 TextAlign = ContentAlignment.MiddleCenter,
-                BackColor = QFG5Theme.ColorSurface
+                BackColor = QFG5Theme.ColorSurface,
+                Margin = new Padding(0)
             };
+            layout.Controls.Add(titleLabel, 0, 0);
+
+            if (showPlaybackButton)
+            {
+                FlowLayoutPanel controls = new FlowLayoutPanel {
+                    Dock = DockStyle.Fill,
+                    FlowDirection = FlowDirection.RightToLeft,
+                    WrapContents = false,
+                    BackColor = QFG5Theme.ColorSurface,
+                    Margin = new Padding(0),
+                    Padding = new Padding(0)
+                };
+                zoomInButton = CreatePreviewButton("+", 22);
+                zoomOutButton = CreatePreviewButton("-", 22);
+                playButton = CreatePreviewButton("Play", 44);
+                spinButton = CreatePreviewButton("Spin Off", 56);
+                spinButton.Click += (s, e) => SetSpinning(!spinning);
+                playButton.Enabled = false;
+                playButton.Click += (s, e) => SetAnimationPlayback(!animationPlaying);
+                zoomOutButton.Click += (s, e) => SetZoom(zoom - 0.1f);
+                zoomInButton.Click += (s, e) => SetZoom(zoom + 0.1f);
+
+                controls.Controls.Add(zoomInButton);
+                controls.Controls.Add(zoomOutButton);
+                controls.Controls.Add(playButton);
+                controls.Controls.Add(spinButton);
+                previewToolTip.SetToolTip(spinButton, "Toggle model rotation");
+                previewToolTip.SetToolTip(zoomOutButton, "Zoom out");
+                previewToolTip.SetToolTip(zoomInButton, "Zoom in");
+                layout.Controls.Add(controls, 0, 1);
+            }
 
             Panel frame = new Panel {
                 Dock = DockStyle.Fill,
@@ -78,6 +135,15 @@ namespace QFG5Extractor.Resources.Save
             glControl.Load += GlControl_Load;
             glControl.Paint += GlControl_Paint;
             glControl.Resize += (s, e) => InvalidatePreview();
+            if (showPlaybackButton)
+            {
+                glControl.MouseWheel += GlControl_MouseWheel;
+                glControl.MouseEnter += (s, e) => glControl.Focus();
+                glControl.MouseDown += GlControl_MouseDown;
+                glControl.MouseMove += GlControl_MouseMove;
+                glControl.MouseUp += GlControl_MouseUp;
+                previewToolTip.SetToolTip(glControl, "Click and drag to rotate; use the mouse wheel to zoom");
+            }
 
             statusLabel = new Label {
                 Dock = DockStyle.Fill,
@@ -92,13 +158,22 @@ namespace QFG5Extractor.Resources.Save
             viewport.Controls.Add(glControl);
             viewport.Controls.Add(statusLabel);
             frame.Controls.Add(viewport);
-            layout.Controls.Add(titleLabel, 0, 0);
-            layout.Controls.Add(frame, 0, 1);
+            layout.Controls.Add(frame, 0, showPlaybackButton ? 2 : 1);
             Controls.Add(layout);
 
             spinTimer = new Timer { Interval = 33 };
             spinTimer.Tick += (s, e) => {
-                rotation = (rotation + 1.2f) % 360.0f;
+                if (spinning)
+                    rotation = (rotation + 1.2f) % 360.0f;
+                if (animationPlaying && animationFrames.Length > 1)
+                {
+                    animationTickAccumulator++;
+                    if (animationTickAccumulator >= 3)
+                    {
+                        animationTickAccumulator = 0;
+                        animationFrame = (animationFrame + 1) % animationFrames.Length;
+                    }
+                }
                 InvalidatePreview();
             };
             VisibleChanged += (s, e) => {
@@ -120,6 +195,45 @@ namespace QFG5Extractor.Resources.Save
             LoadSelectedModel();
         }
 
+        public void SetPreviewFiles(string modelPath, string animationPath)
+        {
+            modelId = -1;
+            LoadModelFiles(modelPath, animationPath);
+        }
+
+        public void SetAnimationFrames(Matrix4[][] frames)
+        {
+            if (!hasModel)
+                throw new InvalidOperationException("Load a model before updating its preview animation.");
+            if (frames == null || frames.Length == 0)
+                throw new ArgumentException("At least one animation frame is required.", "frames");
+            for (int i = 0; i < frames.Length; i++)
+            {
+                if (frames[i] == null || frames[i].Length != meshes.Count)
+                    throw new ArgumentException("Preview frame track counts must match the loaded model.", "frames");
+            }
+
+            animationFrames = frames;
+            animationFrame = 0;
+            animationTickAccumulator = 0;
+            CalculateAnimatedModelBounds();
+            UpdatePlaybackButton();
+            UpdateStatusLabel();
+            UpdateSpinTimer();
+            InvalidatePreview();
+        }
+
+        public void SetHighlightedTrack(int trackIndex)
+        {
+            if (trackIndex < -1)
+                throw new ArgumentOutOfRangeException("trackIndex");
+            if (hasModel && trackIndex >= meshes.Count)
+                throw new ArgumentOutOfRangeException("trackIndex");
+
+            highlightedTrackIndex = trackIndex;
+            InvalidatePreview();
+        }
+
         public void ClearModel(string message)
         {
             modelId = -1;
@@ -133,44 +247,27 @@ namespace QFG5Extractor.Resources.Save
 
         private void LoadSelectedModel()
         {
-            ClearModelResources();
-            statusMessage = "Loading model " + modelId + "...";
-            UpdateStatusLabel();
+            string modelPath = FindModelPath(SharedState.GetGameDataPath("hdnw", "mdl"), modelId);
+            if (modelPath == null)
+                modelPath = FindModelPath(SharedState.GetModsPath("hdnw", "mdl"), modelId);
+            if (modelPath == null)
+            {
+                ClearModelResources();
+                statusMessage = "Model " + modelId.ToString("D3") +
+                    ".MDL was not found in the configured hdnw/mdl folder.";
+                UpdateStatusLabel();
+                InvalidatePreview();
+                return;
+            }
 
+            string animationPath;
             try
             {
-                string modelPath = FindModelPath(SharedState.GetGameDataPath("hdnw", "mdl"), modelId);
-                if (modelPath == null)
-                    modelPath = FindModelPath(SharedState.GetModsPath("hdnw", "mdl"), modelId);
-                if (modelPath == null)
-                {
-                    statusMessage = "Model " + modelId.ToString("D3") +
-                        ".MDL was not found in the configured hdnw/mdl folder.";
-                    UpdateStatusLabel();
-                    InvalidatePreview();
-                    return;
-                }
-
-                List<MeshData> loadedMeshes = MeshLoader.LoadMesh(modelPath);
-                if (loadedMeshes == null || loadedMeshes.Count == 0)
+                List<MeshData> modelParts = MeshLoader.LoadMesh(modelPath);
+                if (modelParts == null || modelParts.Count == 0)
                     throw new InvalidDataException("The model file contains no readable mesh data.");
-
-                List<Bitmap> loadedBitmaps = viewerLogic.getAllBMPs(modelPath);
-                meshes = loadedMeshes;
-                bitmaps.AddRange(loadedBitmaps);
-                string animationPath;
-                animationFrames = LoadCharacterAnimation(modelId, meshes.Count, out animationPath);
-                animationFrame = 0;
-                CalculateAnimatedModelBounds();
-
-                if (glInitialized)
-                    UploadTextures();
-
-                hasModel = true;
-                statusMessage = Path.GetFileName(modelPath) + " / " + Path.GetFileName(animationPath);
-                UpdateStatusLabel();
-                UpdateSpinTimer();
-                InvalidatePreview();
+                Matrix4[][] frames = LoadCharacterAnimation(modelId, modelParts.Count, out animationPath);
+                LoadModelFiles(modelPath, animationPath, modelParts, frames);
             }
             catch (Exception ex)
             {
@@ -180,6 +277,93 @@ namespace QFG5Extractor.Resources.Save
                 UpdateStatusLabel();
                 InvalidatePreview();
             }
+        }
+
+        private void LoadModelFiles(string modelPath, string animationPath)
+        {
+            ClearModelResources();
+            statusMessage = "Loading model preview...";
+            UpdateStatusLabel();
+
+            try
+            {
+                if (string.IsNullOrWhiteSpace(modelPath) || !File.Exists(modelPath))
+                    throw new FileNotFoundException("Select an existing model file.", modelPath);
+                List<MeshData> loadedMeshes = MeshLoader.LoadMesh(modelPath);
+                if (loadedMeshes == null || loadedMeshes.Count == 0)
+                    throw new InvalidDataException("The model file contains no readable mesh data.");
+                Matrix4[][] loadedFrames = string.IsNullOrWhiteSpace(animationPath)
+                    ? CreateIdentityFrame(loadedMeshes.Count)
+                    : AnmAnimationLoader.LoadFrames(animationPath, loadedMeshes.Count);
+                LoadModelFiles(modelPath, animationPath, loadedMeshes, loadedFrames);
+            }
+            catch (Exception ex)
+            {
+                ClearModelResources();
+                statusMessage = "Could not preview " + Path.GetFileName(modelPath) + ": " + ex.Message;
+                Logger.LogError("CharacterModelPreview", statusMessage);
+                UpdateStatusLabel();
+                InvalidatePreview();
+            }
+        }
+
+        private void LoadModelFiles(string modelPath, string animationPath, List<MeshData> loadedMeshes, Matrix4[][] loadedFrames)
+        {
+            ClearModelResources();
+            try
+            {
+                meshes = loadedMeshes;
+                bitmaps.AddRange(viewerLogic.getAllBMPs(modelPath));
+                animationFrames = loadedFrames;
+                animationFrame = 0;
+                CalculateAnimatedModelBounds();
+
+                if (glInitialized)
+                    UploadTextures();
+
+                hasModel = true;
+                statusMessage = Path.GetFileName(modelPath) +
+                    (string.IsNullOrWhiteSpace(animationPath) ? " / identity pose" : " / " + Path.GetFileName(animationPath));
+                UpdatePlaybackButton();
+                UpdateStatusLabel();
+                UpdateSpinTimer();
+                InvalidatePreview();
+            }
+            catch (Exception ex)
+            {
+                ClearModelResources();
+                statusMessage = "Could not preview " + Path.GetFileName(modelPath) + ": " + ex.Message;
+                Logger.LogError("CharacterModelPreview", statusMessage);
+                UpdateStatusLabel();
+                InvalidatePreview();
+            }
+        }
+
+        private static Matrix4[][] CreateIdentityFrame(int trackCount)
+        {
+            Matrix4[] frame = new Matrix4[trackCount];
+            for (int i = 0; i < frame.Length; i++)
+                frame[i] = Matrix4.Identity;
+            return new[] { frame };
+        }
+
+        private void SetAnimationPlayback(bool enabled)
+        {
+            if (animationFrames.Length <= 1)
+                enabled = false;
+            animationPlaying = enabled;
+            animationTickAccumulator = 0;
+            UpdatePlaybackButton();
+            UpdateSpinTimer();
+        }
+
+        private void UpdatePlaybackButton()
+        {
+            if (playButton == null || playButton.IsDisposed) return;
+            playButton.Enabled = hasModel && animationFrames.Length > 1;
+            playButton.Text = animationPlaying ? "Pause" : "Play";
+            if (!playButton.Enabled)
+                animationPlaying = false;
         }
 
         private static string FindModelPath(string directory, int selectedModelId)
@@ -278,7 +462,7 @@ namespace QFG5Extractor.Resources.Save
                 (minY + maxY) / 2.0f,
                 (minZ + maxZ) / 2.0f);
             float size = Math.Max(maxX - minX, Math.Max(maxY - minY, maxZ - minZ));
-            meshScale = size > 0.0001f ? 2.0f / size : 1.0f;
+            meshScale = size > 0.0001f ? 2.4f / size : 1.0f;
         }
 
         private void GlControl_Load(object sender, EventArgs e)
@@ -379,8 +563,9 @@ namespace QFG5Extractor.Resources.Save
                     GL.LoadIdentity();
                     Matrix4 camera = Matrix4.LookAt(OpenTKVector3.Zero, -OpenTKVector3.UnitZ, OpenTKVector3.UnitY);
                     GL.LoadMatrix(ref camera);
-                    GL.Translate(0.0f, 0.0f, -5.5f);
+                    GL.Translate(0.0f, 0.0f, -5.5f / zoom);
                     GL.Rotate(rotation, 0.0f, 1.0f, 0.0f);
+                    GL.Rotate(dragRotationX, 1.0f, 0.0f, 0.0f);
                     GL.Rotate(270.0f, 1.0f, 0.0f, 0.0f);
                     DrawMeshes();
                 }
@@ -454,14 +639,54 @@ namespace QFG5Extractor.Resources.Save
                     }
                     GL.End();
                 }
+
+                if (meshIndex == highlightedTrackIndex)
+                    DrawMeshHighlight(mesh);
                 GL.PopMatrix();
             }
+        }
+
+        private static void DrawMeshHighlight(MeshData mesh)
+        {
+            GL.Disable(EnableCap.Texture2D);
+            GL.Disable(EnableCap.Lighting);
+            GL.DepthFunc(DepthFunction.Lequal);
+            GL.LineWidth(2.0f);
+            GL.Color3(Color.FromArgb(255, 255, 70, 30));
+            GL.Begin(PrimitiveType.Lines);
+            foreach (int[] face in mesh.Faces)
+            {
+                if (face == null || face.Length < 3)
+                    continue;
+
+                for (int edge = 0; edge < 3; edge++)
+                {
+                    int firstIndex = face[edge];
+                    int secondIndex = face[(edge + 1) % 3];
+                    if (firstIndex < 0 || firstIndex >= mesh.Vertices.Count ||
+                        secondIndex < 0 || secondIndex >= mesh.Vertices.Count)
+                        continue;
+
+                    QFG5Extractor.Resources.Model.Vector3 first = mesh.Vertices[firstIndex];
+                    QFG5Extractor.Resources.Model.Vector3 second = mesh.Vertices[secondIndex];
+                    GL.Vertex3(first.X, first.Y, first.Z);
+                    GL.Vertex3(second.X, second.Y, second.Z);
+                }
+            }
+            GL.End();
+            GL.LineWidth(1.0f);
+            GL.DepthFunc(DepthFunction.Less);
+            GL.Enable(EnableCap.Lighting);
         }
 
         private void ClearModelResources()
         {
             hasModel = false;
+            highlightedTrackIndex = -1;
+            animationPlaying = false;
+            animationTickAccumulator = 0;
             spinTimer.Enabled = false;
+            UpdatePlaybackButton();
             if (glInitialized && !glControl.IsDisposed && glControl.IsHandleCreated)
             {
                 try
@@ -503,6 +728,7 @@ namespace QFG5Extractor.Resources.Save
             spinTimer.Stop();
             ClearModelResources();
             spinTimer.Dispose();
+            previewToolTip.Dispose();
         }
 
         private void UpdateStatusLabel()
@@ -515,7 +741,74 @@ namespace QFG5Extractor.Resources.Save
         private void UpdateSpinTimer()
         {
             spinTimer.Enabled = !disposed && hasModel && glInitialized && Visible &&
+                (spinning || animationPlaying) &&
                 glControl != null && glControl.IsHandleCreated;
+        }
+
+        private static QFG5Button CreatePreviewButton(string text, int width)
+        {
+            return new QFG5Button {
+                Text = text,
+                Width = width,
+                Height = 26,
+                Margin = new Padding(1)
+            };
+        }
+
+        private void SetSpinning(bool enabled)
+        {
+            spinning = enabled;
+            if (spinButton != null)
+                spinButton.Text = spinning ? "Spin On" : "Spin Off";
+            UpdateSpinTimer();
+            InvalidatePreview();
+        }
+
+        private void SetZoom(float value)
+        {
+            zoom = Math.Max(0.5f, Math.Min(3.0f, value));
+            titleLabel.Text = previewTitle + "  " + Math.Round(zoom * 100.0f).ToString("0") + "%";
+            InvalidatePreview();
+        }
+
+        private void GlControl_MouseWheel(object sender, MouseEventArgs e)
+        {
+            if (e.Delta != 0)
+                SetZoom(zoom + Math.Sign(e.Delta) * 0.1f);
+        }
+
+        private void GlControl_MouseDown(object sender, MouseEventArgs e)
+        {
+            if (e.Button != MouseButtons.Left)
+                return;
+
+            dragging = true;
+            lastDragPosition = e.Location;
+            glControl.Cursor = Cursors.SizeAll;
+            glControl.Capture = true;
+        }
+
+        private void GlControl_MouseMove(object sender, MouseEventArgs e)
+        {
+            if (!dragging)
+                return;
+
+            int deltaX = e.X - lastDragPosition.X;
+            int deltaY = e.Y - lastDragPosition.Y;
+            lastDragPosition = e.Location;
+            rotation = (rotation + deltaX * 0.7f) % 360.0f;
+            dragRotationX = Math.Max(-85.0f, Math.Min(85.0f, dragRotationX + deltaY * 0.7f));
+            InvalidatePreview();
+        }
+
+        private void GlControl_MouseUp(object sender, MouseEventArgs e)
+        {
+            if (e.Button != MouseButtons.Left || !dragging)
+                return;
+
+            dragging = false;
+            glControl.Capture = false;
+            glControl.Cursor = Cursors.Default;
         }
 
         private void InvalidatePreview()

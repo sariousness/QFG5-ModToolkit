@@ -1,6 +1,7 @@
 using OpenTK;
 using System;
 using System.IO;
+using System.Text;
 
 namespace QFG5Extractor.Resources.Model
 {
@@ -10,6 +11,27 @@ namespace QFG5Extractor.Resources.Model
         private const int FrameDataOffset = 0x2C;
         private const int BoneMatrixDataLength = 48;
         private const int BoneMatrixLength = 56;
+
+        public static string ReadAnimationName(string filePath)
+        {
+            if (string.IsNullOrWhiteSpace(filePath))
+                throw new ArgumentException("An animation file path is required.", "filePath");
+
+            using (BinaryReader reader = new BinaryReader(
+                File.Open(filePath, FileMode.Open, FileAccess.Read, FileShare.Read)))
+            {
+                if (reader.BaseStream.Length < 0x10)
+                    throw new InvalidDataException("The ANM file is too short to contain its animation name.");
+
+                reader.BaseStream.Seek(0x08, SeekOrigin.Begin);
+                byte[] nameBytes = reader.ReadBytes(8);
+                string name = Encoding.ASCII.GetString(nameBytes);
+                int terminator = name.IndexOf('\0');
+                if (terminator >= 0)
+                    name = name.Substring(0, terminator);
+                return name.Trim();
+            }
+        }
 
         public static Matrix4[][] LoadFrames(string filePath, int expectedBoneCount)
         {

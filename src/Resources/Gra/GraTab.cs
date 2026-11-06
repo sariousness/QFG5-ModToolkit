@@ -604,7 +604,7 @@ namespace QFG5Extractor.Resources.Gra
 
             btnEditGraphic = new QFG5Button { Text = "Edit Graphic", Dock = DockStyle.Fill, Height = 30, Margin = new Padding(0, 1, 4, 1), TabIndex = 11, Enabled = false };
             btnEditGraphic.Click += (s, e) => EditSelectedGraphic();
-            toolTip.SetToolTip(btnEditGraphic, "Open the currently previewed GRA graphic frame in the Texture Editor");
+            toolTip.SetToolTip(btnEditGraphic, "Open the currently previewed GRA graphic frame in Painter");
 
             btnExportMp4 = new QFG5Button { Text = "Export MP4", Dock = DockStyle.Fill, Height = 30, Margin = new Padding(2, 1, 4, 1), TabIndex = 12 };
             btnExportMp4.Click += (s, e) => ExportMP4();

@@ -1,4 +1,4 @@
-# QFG5 reverse-engineering notes and code audit
+# QFG5 reverse-engineering notes and implementation scope
 
 These notes consolidate the archived QFG5 reverse-engineering posts listed in
 [Sources](#sources), then compare their claims with the current source tree. The
@@ -200,7 +200,20 @@ is guaranteed to use every category.
   confuse the flag with a file-version-wide switch.
 - **Lipsync:** the update describes a series of 16-bit time positions
   (tertias, or 1/60 second) and sprite IDs, followed by another table of equal
-  size whose meaning remains unknown.
+  size whose meaning remains unknown. A read-only inspection of one supplied
+  extracted `cda/snc` corpus strongly supports this identification: all 3,894
+  files had the same observed layout, consisting of a 16-bit `0x008E` header,
+  equal-length tables separated by the 16-bit pair `0xFFFF, 0x7B7B`, and a
+  final `0x7D7D` word. The first table decodes as 16-bit time/sprite pairs:
+  times were monotonic in every file, observed sprite IDs ranged from 0 to 14,
+  and the largest time was 1,590 ticks. The second table has the same number
+  of 16-bit pairs, but its fields are still unknown. Files in this corpus were
+  32–1,800 bytes, with 3–224 time/sprite events each. Of the 3,894 SNC names,
+  3,892 matched the documented base-36 `S`-prefixed shape; 3,847 had an exact
+  same-ID `A`-prefixed file in the sibling `cda/aud` folder. All 3,880 AUD
+  files inspected were RIFF/WAVE. These corpus observations are strong
+  corroboration, not proof that every release or SNC variant uses this layout;
+  the header's meaning and second-table semantics remain unverified.
 
 ### Models and animation
 
@@ -422,35 +435,37 @@ Portable tooling should resolve path components case-insensitively where
 needed rather than relying on exact casing or assuming one host filesystem's
 behavior.
 
-## Code audit against these notes
+## Current implementation scope (checked 2026-10-26)
 
-This is a format-conformance comparison, not a general security, UI, or
-performance audit. “Mismatch” means the current implementation differs from
-the cited description or omits a described behavior; it does not establish
-that every game asset fails. The posts themselves retain unknowns, and the
-repository's implementations may target variants not covered by them.
+This is a source-scope snapshot, not a general security, UI, or performance
+audit and not a claim of complete format conformance. The application now has
+workflows for SPK, MDL/ANM, NOD/IMG, GRA, QGM, and selected save fields. The
+format posts retain unknowns, and the code may target variants not covered by
+them. Regression tests are source-level checks; they are not a substitute for
+testing representative game files and in-game results.
 
 | Area | Current code evidence | Comparison and audit result |
 | --- | --- | --- |
-| Resource inventory | The source tree has converters for SPK, MDL, ANM viewing, NOD/IMG, GRA, QGM, and save editing. | **Partial scope.** No implementations were found for FTR, ZZZ, ROM, RGD, STR, QGF, SNC/lipsync, WAV/AUD audio, or MOV decoding in the inspected `src` tree. |
+| Resource inventory | The current app includes SPK, MDL/ANM viewing, NOD/IMG panorama, FTR region overlays, GRA, QGM, and selected save-editing workflows. | **Partial scope.** FTR parsing is structural and the overlay uses matching resource IDs and IMG coordinate dimensions; the inspected source still does not provide end-user parsers for ZZZ, ROM, RGD, STR, QGF, SNC/lipsync, WAV/AUD audio, or MOV decoding. |
 | SPK containers | [`SpkConverter.cs`](./src/Storage/SPK/SpkConverter.cs) parses footer values and a ZIP-like central directory, then copies/repackages payloads. | **Partial match.** It relies on the ZIP-like central directory and assumes payload sizes can be copied directly, consistent with the reported uncompressed entries. It does not parse or validate the leading resource-category and per-type index tables, nor validate modified ZIP signatures or distinguish the two resource-table formats. Check against all four known archives and their table flags. |
-| QGM | [`MsgConverter.cs`](./src/Resources/Message/MsgConverter.cs) reads the version byte at offset 4, treats version >3 as obfuscated, reads a text length at a fixed header offset, skips apparent `A0` strings, and applies lookup-table decoding to obfuscated bytes. | **High-confidence format mismatch.** The article describes a 32-bit version and per-block flags; flag `0x0004`, not version 4 alone, selects the XOR/rotate/tail-invert transformation. The current lookup-table transformation is not that algorithm. The shown parser also does not interpret the documented block count, four-part IDs, option records, optional labels, or trailing 32-bit block value, and uses a linear scan instead. It therefore cannot preserve or reliably reconstruct dialogue structure from the published format. |
-| QGF and lipsync | No QGF font or lipsync parser was found in `src` (search for `.QGF`, QGF, `.LIP`, and lipsync symbols). | **Not implemented in the inspected source.** The notes above are format guidance only; the message tab's QGM handling does not cover fonts or lipsync. |
+| QGM | [`MsgConverter.cs`](./src/Resources/Message/MsgConverter.cs) has record-aware parsing, metadata sidecars, and a rebuild path. The parser reads message counts, block flags, options, labels, text payloads, and trailing block values; unchanged records can be preserved byte-for-byte. | **Implemented with remaining format questions.** The source-level tests cover record structure and safe rebuild behavior. Obfuscated text is decoded with position-sensitive lookup tables; this differs from the XOR/rotate transform described in the cited post. Compare against representative v2/v3/v4 files before treating the text decoding as conformant. |
+| QGF and lipsync | No QGF font or lipsync parser was found in `src` (search for `.QGF`, QGF, `.LIP`, and lipsync symbols). A supplied extracted `cda/snc` corpus (3,894 files) was also inspected: every SNC file shared the `0x008E` header, paired-table layout, `0xFFFF, 0x7B7B` separator, and `0x7D7D` terminator; its first table consistently parsed as monotonic time/sprite pairs, and 3,847 files had exact same-ID `A`-prefixed AUD counterparts. | **QGF and SNC parsing are not implemented.** The corpus structure, sprite-ID range, and matching RIFF/WAVE speech resources strongly corroborate the SNC lipsync interpretation. The second table and header semantics remain unknown, and the sample is not a guarantee of all variants. The message tab's QGM handling does not cover fonts or lipsync. |
 | GRA | [`GraConverter.cs`](./src/Resources/Gra/GraConverter.cs) reads the mode, collection count, RGB555 palette, collection/frame offsets, and supports modes 0–4. Its preview uses the first collection and selects its last frame; mode 3 and mode 4 both call the same `transparentFF` decoder. | **Partial support with a mode-4 mismatch.** Header/palette/collection fields and the basic mode families align. Mode 4's `0xFF` “restore original background” behavior is collapsed into mode-3 transparency, so layered composition is not represented. The preview path also does not select arbitrary collections, and its default frame is the last rather than a general collection/animation selection. |
 | NOD/IMG panorama data | [`PanoConverter.cs`](./src/Resources/Panorama/PanoConverter.cs) reads the NOD palette at `0xA8`, reads dimensions from the repeated IMG header area, applies an RLE-like decode, rotates the result, and can write modified NOD/IMG files. | **Partial support; IMG layout requires validation.** The NOD palette offset agrees with the post, but palette alpha is discarded. The decoder treats dimensions as signed 16-bit values and flattens RLE into a single pixel buffer; it does not explicitly model per-column end markers, right-edge-first columns, the doubled decoded height, or unused lower area described for IMG. The round-trip's orientation, dimensions, and exact boundaries should be checked against known room files. It also does not parse/validate the documented NOD magic and file-size header. |
-| ZZZ/FTR/ROM | No parsers for these extensions/formats were found in `src`. | **Not implemented in the inspected source.** Existing panorama handling is limited to NOD/IMG pairing. |
+| FTR regions | [`FtrConverter.cs`](./src/Resources/Panorama/FtrConverter.cs) parses the signed region count, four-word region headers, and signed point pairs with bounds and trailing-data checks; Scenes loads all extracted loose FTR files, narrows them to the selected room, and maps polygons from IMG coordinate dimensions (including rotated BMP output). | **Structural parser and investigative overlay only.** Matching resource IDs and IMG dimensions are used for placement rather than fitting coordinate bounds. A nonzero third header word is highlighted as a *candidate* portal field based on the cited article; its game semantics remain unverified. FTR editing and RGD parsing are not implemented. |
+| ZZZ/ROM | No parsers for these extensions/formats were found in `src`. | **Not implemented in the inspected source.** Existing panorama handling is limited to NOD/IMG pairing. |
 | MDL meshes/textures | [`qfg5modelShared.cs`](./src/Resources/Model/qfg5modelShared.cs), [`ModelConverter.cs`](./src/Resources/Model/ModelConverter.cs), and [`MeshLoader.cs`](./src/Resources/Model/MeshLoader.cs) use fixed offsets; the viewer loader reads vertices, UVs, and face indices. | **Possible variant/layout mismatch; needs fixture-based confirmation.** The published header puts the palette at `0x28` and describes a 1024-byte palette, whereas the legacy converter uses palette offset `0x2D` and length `1019` (both end at `0x428`). It does not branch on `MIRT` versus `8XOV`, despite the latter lacking texture fields. `MeshLoader` reads a 10-byte part name, while the post describes 16 bytes. The vertex/UV/face concepts otherwise correspond, but the format assumptions should be checked on both IDs and on a known model such as `063.MDL`. |
-| ANM | [`MdlViewer.cs`](./src/Viewers/Model/MdlViewer.cs) discovers per-model `*.ANM` files and parses animation data. | **Record ordering mismatch with the published description.** `ReadAnmBoneMatrix` reads the 3-float translation and 9-float rotation before seeking over the two 32-bit integers, while the post places those integers first in each block. It consumes the same 56 bytes per record but interprets the fields in a different order. The reader also does not validate magic/header size or use the documented delay. Confirm field order against a known animation before relying on output. |
-| Savegames | [`SaveGameParser.cs`](./src/Resources/Save/SaveGameParser.cs) scans candidate offsets for 16-byte inventory slots and edits a 120-slot pool; [`SaveSession.cs`](./src/Resources/Save/SaveSession.cs) manages loaded bytes and safe writes. | **Inventory-focused, not full-format parsing.** It does not decode/validate the documented header constants, noise, obfuscated 1096-byte player class, dialogue/object/engine/equipment/map/room blocks. Inventory offset detection is heuristic; this should not be described as a complete save parser/editor against the published structure. |
+| ANM | [`AnmAnimationLoader.cs`](./src/Resources/Model/AnmAnimationLoader.cs) loads frame matrices for the viewer, checking bone/frame counts and record bounds. | **Partial format validation.** It reads translation and rotation floats from each 56-byte record and skips the remaining 8 bytes. The cited post describes two integers before those floats, so the field order still needs comparison with known ANM fixtures. The loader does not validate the full magic/header or use the documented frame delay. |
+| Savegames | [`SaveSession.cs`](./src/Resources/Save/SaveSession.cs), [`SaveGameParser.cs`](./src/Resources/Save/SaveGameParser.cs), [`SaveTab.cs`](./src/Resources/Save/SaveTab.cs), and [`FlagsTab.cs`](./src/Resources/Save/FlagsTab.cs) implement guarded inventory, character model/room, and flag workflows with a shared save session. | **Selected fields only.** Loading validates supported save structure and inventory placement; flag discovery parses variable-length sections, and character fields are located separately. Saving protects an existing backup, checks for external changes, and preserves file length. This is not a complete save-format parser, and compatibility across saves and in-game outcomes remains limited. |
 | RGD and STR | No `.RGD` or `.STR` parser found in `src`. | **Not implemented in the inspected source.** RGD's indirection-heavy navigation/region data and STR star points remain documentation only. |
 | Room projection/rendering | The panorama converter exports an image; the cited projection post describes engine-side cylindrical mapping and precomputed tables. | **Separate concern.** A raw panorama export is not expected to reproduce the in-engine projection. The current source comparison does not establish that the project implements the engine's cylindrical projection or underwater distortion. |
 | Rendering fidelity | [`MdlViewer.cs`](./src/Viewers/Model/MdlViewer.cs) and [`GlbExporter.cs`](./src/Viewers/Model/GlbExporter.cs) render/export models. | **Not established by asset extraction.** The articles report custom software rendering, palette shading LUTs, opaque/blended paths, Z-buffering, special glow passes, and nonstandard projection. This audit did not compare the viewer or exported models against engine-rendered references. |
-| Audio/cutscenes/room code | The articles identify MS ADPCM WAV, Cinepak/SVQ1 MOV, hardcoded engine logic, and native room modules. | **Outside demonstrated coverage.** No corresponding decoder or room-module implementation was found in inspected source paths. |
+| Audio/cutscenes/room code | The articles identify MS ADPCM WAV, Cinepak/SVQ1 MOV, hardcoded engine logic, and native room modules. | **Partial audio browsing/playback.** Audio Explorer scans extracted WAV/AUD resources, surfaces RIFF/WAVE headers, supported INFO/BWF/CART/ID3 title metadata, and QFG5 speech IDs encoded in filenames; playback depends on system codec support. SNC/lipsync parsing, MOV decoding, and room-module implementation remain outside demonstrated coverage. |
 
-### Highest-priority follow-up verification (no code changes made)
+### Follow-up verification
 
-1. Validate QGM parsing against a known v3 and v4 file, including a block with
-   options, a label, an obfuscation flag, a short tail, and a trailing value.
+1. Compare QGM extraction and rebuilding against representative v2, v3, and v4
+   files, including options, labels, obfuscated text, and short payload tails.
 2. Compare a known `.NOD`/`.IMG` room pair before and after decode/re-encode;
    check exact dimensions, orientation, end-of-column behavior, and pixel
    count.
@@ -461,8 +476,9 @@ repository's implementations may target variants not covered by them.
 5. Test ANM field ordering using known frames: compare both integer-first and
    float-first layouts with the expected translation/rotation values and
    animation playback.
-6. Compare savegame parsing against a sample whose decoded header, player
-   state, dialogue, object, engine, map, and room sections can be checked.
+6. Compare save loading and all exposed edits against multiple saves, then
+   verify the edited copies in-game. The two reported deeds-screen flag checks
+   do not establish compatibility for all flags or save variants.
 7. Identify the actual SPK variants and validate resource catalogs as well as
    payload extraction for each known archive.
 
